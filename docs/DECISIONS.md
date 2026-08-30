@@ -212,3 +212,37 @@ One line per non-obvious choice, appended by whoever made it.
   — git in the workspace tests, actual timeouts in the bash and rubric tests — and one 1.1 s
   litellm import. Either split a `slow` marker or amend the NFR; do not fix it by mocking git,
   which is the one thing those tests exist to exercise.
+
+## WP-4.3 / WP-4.4 — scaffold and the build phase (2026-08-31)
+
+- `scaffold()` runs the Design's command through the same guarded bash tool as everything else.
+  `scaffold_command` is model-written, so it is untrusted; a denied or failing command returns
+  `ok=False` rather than raising, and the build proceeds with the agent writing its own
+  boilerplate. A bad scaffold command should cost a turn, never the run.
+- The scaffold recipe lives in the Design, not in `scaffold.py`. FR-BUILD-06's "passing empty
+  suite" is `mkdir -p tests` plus a placeholder test in the fixture's `scaffold_command` —
+  `pytest` exits 5 on a repo with no tests, so without it the rubric's test criterion fails on
+  round one for entirely the wrong reason.
+- The round loop stays in `agent/loop.py`. `run_build` owns the wiring that makes rounds safe
+  and inspectable — scaffold, tool set, per-turn snapshot, persisted score, squash on success —
+  and nothing else. Re-implementing grade/feedback/repeat here would be a second copy of it.
+- Per-turn snapshots are taken from the loop's own `turn` events, which fire at the *start* of a
+  turn: turn N is snapshotted when turn N+1 begins, and the last when the loop ends. One commit
+  per turn, honest labels, and nothing new required from `loop.py`.
+- `RubricGrader` is an object rather than a closure because it owns the memo, and the memo has
+  to survive across grading rounds for COST CONTROL 2 to mean anything.
+- The model is shown the rubric it will be graded against. Hiding it would only delay the same
+  information until the first failed round; the prompt's integrity clause is what keeps showing
+  it from being an invitation.
+- Only success squashes. An unfinished phase keeps its turn commits, because that is what a
+  resume reads. The turn *labels* survive a squash either way, so a completed phase is still
+  rewindable.
+- `build.py` imports `_atomic_write` from the fs tool module rather than re-writing
+  write-then-replace. WP-3.1 needs it too and should promote it out of the tool module then.
+- **`rubric_rounds` is not enforced.** It is a column of the FR-SEL-03 effort table but no FR
+  requires it, and capping graded rounds would need a `max_graded_rounds` parameter on
+  `run_agent_loop` — WP-2.6's file, outside this scope. Stall detection, `max_turns` and
+  `max_usd` bound the spend today. Wire it when the loop next changes.
+- The unit tier is now **21 s** against NFR-TEST-01's 10 s, and `test_build_phase.py` is half of
+  it. The cost is real git and real subprocesses, which is exactly what those tests exist to
+  exercise — the fix is a selector, not a mock. See the note in the WP-4.2 section.

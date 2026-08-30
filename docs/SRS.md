@@ -45,6 +45,8 @@
 | 2.9 | Cassette recorder/replayer | ✅ landed (fixtures hand-written until `make cassettes` runs) |
 | 4.1 | Workspace git wrapper | ✅ landed |
 | 4.2 | Rubric grading engine | ✅ landed |
+| 4.3 | Deterministic scaffold | ✅ landed |
+| 4.4 | Build phase | ✅ landed |
 | everything else | — | not started |
 
 ---
@@ -1401,8 +1403,8 @@ passwords hashed with argon2id; rate limits on all auth endpoints; only the usag
 | `FR-SESS-05` | 3.7 | todo |
 | `FR-WS-01/02/03`, `SEC-08` | 4.1 | ✅ landed |
 | `FR-RUB-01…09` | 4.2 | ✅ landed |
-| `FR-BUILD-06` | 4.3 | todo |
-| `FR-BUILD-01…05`, `FR-ART-04` | 4.4 | todo |
+| `FR-BUILD-06` | 4.3 | ✅ landed |
+| `FR-BUILD-01…05`, `FR-ART-04` | 4.4 | ✅ landed |
 | R0 milestone | 4.5 | todo |
 | `FR-EVAL-01/02` | 4.6 | todo |
 | `FR-COST-03` | 5.1 | todo |
