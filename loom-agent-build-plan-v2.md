@@ -8,6 +8,14 @@ v1 answered that at WP-4.5 — roughly 25 work packages in. v2 answers it at WP-
 only 13 WPs stand between you and it, because validate/plan/design, gates, the pipeline, the
 CLI, and the session log all turn out not to be on the path.
 
+> **Revision 2.1 (2026-08-30).** `docs/SRS.md` is now the requirements reference: what each
+> feature must do, and how it is verified. This file stays what it always was — the order to
+> build in, and the prompt for each session. Two additions came out of the SRS: **§6.6, the
+> terminal experience (WP-8.x)**, which the plan had never specified beyond "a CLI", and
+> **§6.7, accounts and the usage site (WP-9.x)**, which is R2 and touches nothing in R1.
+> §3 no longer duplicates `CLAUDE.md`; the file at the repo root is the source of truth, and
+> its invariants were amended for the TUI layer — see SRS §2.5.
+
 ---
 
 ## 0. What changed from v1, and why
@@ -68,9 +76,13 @@ WP-0  spike (throwaway, delete after)
 - 3.7 `loom replay` — after 3.0 + 3.6
 - 4.7 full-pipeline e2e — after 3.6 + 4.5
 - 5.x hardening · 6.x blueprints/preview · 7.x release — after 4.6
+- 8.1 session shell — after 1.5 · 8.2 REPL/palette/widgets — after 8.1 + 3.6 ·
+  8.3 live output + theme — after 8.2 + 5.5 · 8.4 strict mode + doctor/bug — after 8.2 + 2.3
+- 9.x accounts and the usage site — R2, after R1 ships. Nothing in R1 depends on it.
 
 If you are driving two sessions in parallel: spine in one, backfill in the other. They collide
-only at `loom/cli.py`, so let the backfill session own that file exclusively.
+only at `loom/cli.py`, so let the backfill session own that file exclusively. The 8.x sessions
+own `loom/tui/` and `loom/cli.py` outright — do not let a spine session touch either.
 
 **Definition of done for v1:** `pipx install loom-cli && loom build "<idea>"` produces a repo
 that clears its own rubric at ≥0.85 on eight fixtures out of eight, for under $1 each.
@@ -100,59 +112,24 @@ that clears its own rubric at ≥0.85 on eight fixtures out of eight, for under 
 
 ---
 
-## 3. `CLAUDE.md` — write this before WP-1.1
+## 3. `CLAUDE.md`
 
-Repo root. Loaded every session; the single highest-leverage file in the project.
+Written, at the repo root, loaded every session — still the single highest-leverage file in the
+project. It is **not** reproduced here any more: a second copy in this file would drift from the
+real one the moment either changed, and the real one is three lines away in the same repo.
 
-```markdown
-# Loom
+Two invariants were amended after the SRS landed (rationale in `docs/SRS.md` §2.5, one line each
+in `docs/DECISIONS.md`):
 
-CLI that takes a founder's idea and produces a working, tested codebase.
-Pipeline: Validate -> Plan -> Design -> Build+Test. Terminal only. No web UI, no server.
+1. **The terminal-library ban is now scoped, not global.** The core still may not import `typer`,
+   `rich`, `prompt_toolkit` or anything like them; `loom/cli.py`, `loom/gates.py`, `loom/ui.py`
+   and `loom/tui/` may. `loom/tui/` is presentation only, and every path it drives must also be
+   reachable by flag — `--yes` completing a full run with no TTY is the test that keeps that true.
+2. **"No web UI, no server" is an R1 rule.** R2's account service is a separate package,
+   `loom-cloud/`, which the CLI reaches through `loom/account.py` and nothing else. BYOK mode
+   must keep working with that service unreachable.
 
-## Invariants — do not violate without asking
-- Python 3.11+. No Node dependency, ever.
-- `loom/` core must never import `typer`, `rich`, or `questionary`. CLI concerns live in
-  `loom/cli.py` and `loom/gates.py` only. The core must be drivable from a library.
-- Provider-agnostic: all model calls go through `litellm`, and every one of them goes through
-  `loom/agent/providers.py`. No `litellm`, `anthropic`, or `openai` import anywhere else.
-- Shape A phases (validate/plan/design) get NO filesystem or bash tools. This is a security
-  boundary, not a style choice — those phases ingest untrusted web content.
-- Every phase output is a Pydantic model from `loom/contracts.py`, persisted to
-  `.loom/artifacts/`. Downstream phases read artifacts, never upstream transcripts.
-- Editing existing files is `str_replace` (exact, unique-match-or-error). No diff-hunk apply.
-- Never write secrets into the workspace. Never `git push`. Never `rm -rf`.
-
-## Commands
-- Test (unit + cassette): `uv run pytest -q`
-- Live tests: `uv run pytest -m live`
-- Lint: `uv run ruff check . && uv run ruff format --check .`
-- Types: `uv run mypy loom`
-- All: `make check`
-
-## Style
-- Pydantic v2. `from __future__ import annotations`. Full type hints.
-- Prefer stdlib. New dependencies need a line in docs/DECISIONS.md.
-- No `print()` in `loom/` — structured events via `session.log_event`.
-- Tests use `FakeLLM` (loom/testing/fake_llm.py). No network in unit tests.
-
-## Cost rules
-- The judge model for rubric grading is pinned cheap in config and its spend is ledgered
-  under phase "judge", separately from the phase that triggered it.
-- Shell criteria grade before judge criteria. A failed hard_fail shell criterion returns
-  immediately without spending a single judge call.
-
-## Layout
-loom/{cli,config,contracts,session,gates,ledger,scaffold,security,workspace,rubric,cache}.py
-loom/agent/{loop,context,providers}.py  loom/agent/tools/{fs,bash,web,ask_user,registry}.py
-loom/phases/{base,validate,plan,design,build}.py
-loom/testing/fake_llm.py  loom/prompts/*.md  loom/blueprints/*/
-
-## Working agreement
-- Stay inside the file scope given in the task. Ask before touching anything else.
-- Write the test first, then the implementation.
-- Append one line to docs/DECISIONS.md for any non-obvious choice.
-```
+Update `CLAUDE.md` by hand as further invariants change. Never generate it.
 
 ---
 
@@ -286,13 +263,53 @@ or more, expect to split it.
 | **6.4** | S | `loom preview` — boot the built app, print a local URL | `loom/preview.py` | fixture app boots and responds to a healthcheck | 4.5 |
 | **7.4** | M | Packaging: pyproject metadata, Apache-2.0, README with asciinema, GitHub Action running `make check`, PyPI publish | root files, `.github/workflows/check.yml` | `pipx install loom-cli` works in a clean container | all |
 
-### 6.6 Deferred past v1
+### 6.6 Backfill — the terminal experience
+
+New in revision 2.1. Specified in `docs/SRS.md` §3 and §4.1–4.5; the requirement IDs in the
+"Done when" column are the acceptance tests. None of it gates WP-4.5 — but 8.1 and 8.2 are what
+turn a working pipeline into a product someone will actually sit in front of, so they land before
+R1 ships, not after.
+
+| WP | Size | Goal | Scope | Done when | Deps |
+|---|---|---|---|---|---|
+| **8.1** | M | Session shell: `loom` with no subcommand starts an interactive session. Banner (version, model + context, effort, billing mode, provider, cwd, run state), first-run `.loom/` offer, stable exit codes | `loom/tui/app.py`, `loom/tui/banner.py`, `loom/cli.py`, `tests/test_tui_banner.py` | banner is a pure function of a state object and every field is asserted; a key present in the environment appears nowhere in the output (`FR-CLI-03`); `loom` with no TTY does not start a REPL; one test per exit code 0–5 (`FR-CLI-06`) | 1.5 |
+| **8.2** | L | REPL + one command registry + filtering `/` palette + inline widgets (radio, slider, confirm, phase picker, run picker). Input routing by run state. `@` paths, `!` guarded bash, `#` notes | `loom/tui/{repl,commands,widgets,complete}.py`, `tests/test_tui_repl.py`, `tests/test_tui_commands.py` | palette and `/help` are both rendered from the single registry, no second list (`FR-SLASH-05`); `/model` Enter persists and `s` does not (`FR-SEL-02`); `/phase` offers to run missing upstream phases instead of failing (`FR-SLASH-08`); free text routes correctly in all four run states (`FR-REPL-03`); `!rm -rf /` is denied by the same code path as the agent's (`FR-REPL-09`). All of it against `prompt_toolkit` pipe input — no screen-scraping | 8.1, 3.6 |
+| **8.3** | M | Live progress line, streaming text, spinner, the gradient effort slider, theme file | `loom/tui/{live,theme,anim}.py`, `loom/ui.py`, `tests/test_tui_theme.py` | piped output contains no ESC byte and produces events identical to a TTY run (`FR-ANIM-04`); a `.loom/theme.toml` swaps spinner frames, glyphs and gradient stops with no code change (`FR-ANIM-05`); an exception inside a widget still restores the terminal (`FR-ANIM-06`) | 8.2, 5.5 |
+| **8.4** | M | `strict` mode permission prompts, `/doctor`, `/bug` redacted bundle | `loom/tui/permissions.py`, `loom/diagnostics.py`, `tests/test_diagnostics.py` | strict mode prompts before every write and every bash call, and allow-for-this-run does not persist past the run (`FR-GATE-05`); a planted fake key appears nowhere in the bug bundle (`FR-DIAG-03`) | 8.2, 2.3 |
+| **8.5** | S | `/background`, `/rewind` | `loom/tui/background.py`, `loom/replay.py` | deferred to R1.1 — see §6.8 | 8.2, 7.5 |
+
+> **8.2 is the second genuinely hard WP**, for the same reason 2.6 was: it is three things in a
+> trench coat. If the session struggles, split it — registry + palette first, then the widgets,
+> then input routing. The registry is the piece everything else hangs off; get it wrong and every
+> command gets its own special case.
+>
+> The `ask_user` tool (2.8) is the pipeline half of "ask the user when unsure"; 8.2 is the
+> terminal half. Land 2.8 first or 8.2 has nothing to render.
+
+### 6.7 R2 — accounts and the usage site
+
+Nothing here is on the R1 path, and nothing in R1 may depend on it. Start only after R1 ships.
+Specified in `docs/SRS.md` §4.25 and §5.5.
+
+| WP | Size | Goal | Scope | Done when | Deps |
+|---|---|---|---|---|---|
+| **9.1** | L | Account service: sign-up, email verification, argon2id password storage, rate-limited auth endpoints | `loom-cloud/` (separate package, separate deploy) | service tests green; no plaintext or reversibly-stored password anywhere; auth endpoints rate-limited (`FR-ACCT-01`, `FR-ACCT-10`) | — |
+| **9.2** | M | `loom login` / `loom logout` — browser device-authorization flow, token at `~/.loom/credentials.json` mode 0600, refresh and revoke | `loom/account.py`, `loom/cli.py`, `tests/test_account.py` | the CLI never prompts for the account password (`FR-ACCT-02`); a full BYOK run succeeds with the service switched off (`FR-ACCT-09`) | 9.1 |
+| **9.3** | M | Managed mode: usage sync from the ledger, quota checks, exit code 6 | `loom/account.py`, `loom/ledger.py`, `tests/test_usage_sync.py` | the sync payload carries only run id, phase, model, token counts, USD and timestamp — asserted field-by-field, and no prompt, artifact, path or idea text (`FR-ACCT-05`); a quota-check network failure falls back to the local budget rather than blocking work (`FR-ACCT-06`) | 9.2, 1.3 |
+| **9.4** | L | The website: current usage, quota and remaining, per-run history with phase breakdown, plan, key management, CSV export, account deletion | `loom-cloud/web/` | a finished run's spend is visible on the site within 60s (`FR-ACCT-07`) | 9.3 |
+
+> The privacy boundary in 9.3 is the whole product risk in this phase. Loom reads a founder's
+> unreleased idea and their source code; the day either leaves the machine is the day nobody
+> trusts it again. Assert the payload schema field-by-field, not with a snapshot test.
+
+### 6.8 Deferred past v1
 
 | WP | What | Revisit when |
 |---|---|---|
 | 7.5 | Session fork/replay with leaf pointers | Someone asks for "redo this run but answer question 2 differently" and reject-with-feedback isn't enough |
 | 6.2b | `cli-tool-python`, `static-site` blueprints | A user asks for one |
 | 5.3 | `rich.Live` streaming view | 5.5's line output is measurably unpleasant to watch |
+| 8.5 | `/background` and `/rewind` | The R1 flow is in daily use and re-running a phase proves too slow to live with |
 
 ---
 
@@ -504,3 +521,10 @@ loop is proven. Phases 5–7 are roughly a week each.
 
 Treat the first `make eval` run where mean rubric score clears 0.85 across eight fixtures as
 the real milestone. WP-4.5 proves it can work once; 4.6 proves it works.
+
+The 8.x terminal work is roughly a week of its own, and 8.2 is most of it. It can run in
+parallel with the 5.x hardening once 3.6 exists, in a session that owns `loom/cli.py` and
+`loom/tui/` exclusively. Do not start it before 4.5 is green: a beautiful terminal in front of
+a pipeline that cannot build a repo is the most expensive kind of nothing.
+
+9.x is a separate project with a separate deploy, and starts after R1 is in someone's hands.

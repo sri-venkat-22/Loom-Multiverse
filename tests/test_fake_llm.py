@@ -1,3 +1,5 @@
+"""NFR-TEST-01 (the unit tier), SEC-03 (the tool-list assertion it makes possible)."""
+
 from __future__ import annotations
 
 import pytest
@@ -56,6 +58,7 @@ async def test_running_dry_raises_and_still_records_the_call() -> None:
 
 
 async def test_tool_specs_are_recorded_for_absence_assertions() -> None:
+    """SEC-03 — Shape A isolation is asserted against the list actually sent to the provider."""
     fake = FakeLLM([Response(text="x"), Response(text="y")])
     specs = [{"type": "function", "function": {"name": "web_search"}}]
     await fake.complete([], tools=specs)

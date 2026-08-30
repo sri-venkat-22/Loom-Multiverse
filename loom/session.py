@@ -1,15 +1,46 @@
-"""Append-only JSONL event log. The only place `loom/` is allowed to narrate itself."""
+"""Append-only JSONL event log. The only place `loom/` is allowed to narrate itself.
+
+FR-SESS-01/02, FR-SESS-09, NFR-OBS-01/02, NFR-REL-02.
+"""
 
 from __future__ import annotations
 
 import json
 import os
 import secrets
+import signal
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 LOOM_DIR = ".loom"
+
+#: The event vocabulary, SRS §6. Closed on purpose: a typo'd kind is invisible to `loom status`
+#: and to `/resume`, so it fails at the call site instead. Adding a kind is one line here.
+EVENT_KINDS = frozenset(
+    {
+        "run_started",
+        "phase_started",
+        "turn",
+        "tool_call",
+        "tool_result",
+        "ask_user",
+        "user_answer",
+        "artifact_written",
+        "gate_opened",
+        "gate_decision",
+        "graded",
+        "retry",
+        "budget_warning",
+        "phase_finished",
+        "interrupted",
+        "run_finished",
+    }
+)
 
 
 def new_run_id() -> str:
@@ -47,6 +78,11 @@ class Session:
         return cls(root, runs[-1]) if runs else None
 
     def log_event(self, kind: str, **fields: Any) -> dict[str, Any]:
+        if kind not in EVENT_KINDS:
+            raise ValueError(
+                f"unknown event kind {kind!r}. Add it to loom.session.EVENT_KINDS and to "
+                f"SRS §6, or use one of: {', '.join(sorted(EVENT_KINDS))}"
+            )
         event: dict[str, Any] = {
             "ts": datetime.now(UTC).isoformat(),
             "run_id": self.run_id,
@@ -95,3 +131,31 @@ class Session:
                 if isinstance(parsed, dict):
                     events.append(parsed)
         return events
+
+    @contextmanager
+    def interruptible(self, **fields: Any) -> Iterator[None]:
+        """Record an `interrupted` event when a signal arrives, then unwind (FR-SESS-09).
+
+        The handler is restored before the exception propagates, so a second Ctrl-C during
+        cleanup behaves normally instead of being swallowed. Outside the main thread signal
+        handlers cannot be installed at all, and this becomes a no-op.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+
+        watched = (signal.SIGINT, signal.SIGTERM)
+        previous = {sig: signal.getsignal(sig) for sig in watched}
+
+        def handler(signum: int, frame: FrameType | None) -> None:
+            signal.signal(signum, previous[signal.Signals(signum)])
+            self.log_event("interrupted", signal=signal.Signals(signum).name, **fields)
+            raise KeyboardInterrupt(signal.Signals(signum).name)
+
+        for sig in watched:
+            signal.signal(sig, handler)
+        try:
+            yield
+        finally:
+            for sig, old in previous.items():
+                signal.signal(sig, old)

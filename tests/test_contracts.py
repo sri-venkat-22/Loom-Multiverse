@@ -1,3 +1,5 @@
+"""SRS §6 (data model), §5.4 (provider interface), FR-DES-02."""
+
 from __future__ import annotations
 
 import pytest
@@ -110,6 +112,7 @@ def test_judge_criterion_needs_no_command() -> None:
 
 
 def test_manifest_cycle_is_rejected() -> None:
+    """FR-DES-02 — the manifest is a DAG."""
     with pytest.raises(ValidationError, match="dependency cycle"):
         Design(
             summary="s",
@@ -131,6 +134,7 @@ def test_manifest_self_cycle_is_rejected() -> None:
 
 
 def test_manifest_dependency_on_an_unknown_path_is_rejected() -> None:
+    """FR-DES-02 — no dependency on a path outside the manifest."""
     with pytest.raises(ValidationError, match="not in the manifest"):
         Design(
             summary="s",
@@ -140,6 +144,7 @@ def test_manifest_dependency_on_an_unknown_path_is_rejected() -> None:
 
 
 def test_duplicate_manifest_paths_are_rejected() -> None:
+    """FR-DES-02 — unique paths."""
     with pytest.raises(ValidationError, match="duplicate paths"):
         Design(
             summary="s",
@@ -160,6 +165,7 @@ def test_empty_manifest_is_rejected() -> None:
 
 
 def test_tool_call_arguments_arriving_as_a_json_string_are_parsed() -> None:
+    """SRS §6 — Qwen emits this shape intermittently."""
     call = ToolCall(id="1", name="read_file", arguments='{"path": "a.py"}')  # type: ignore[arg-type]
     assert call.arguments == {"path": "a.py"}
 
@@ -188,6 +194,8 @@ def test_response_carries_the_raw_payload_untouched() -> None:
 
 
 def test_provider_protocol_is_satisfied_by_a_duck() -> None:
+    """SRS §5.4 — the only seam between Loom and any model."""
+
     class Duck:
         async def complete(self, messages, tools=None):  # type: ignore[no-untyped-def]
             return Response(text="hi")

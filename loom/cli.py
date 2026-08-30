@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from enum import IntEnum
 from pathlib import Path
 
 import typer
@@ -12,6 +13,19 @@ from loom.ledger import Ledger
 from loom.session import LOOM_DIR, Session, list_runs
 
 app = typer.Typer(add_completion=False, help="Turn an idea into a working, tested codebase.")
+
+
+class ExitCode(IntEnum):
+    """FR-CLI-06 — stable across releases. Never renumber one."""
+
+    OK = 0
+    ERROR = 1  # unexpected
+    USAGE = 2  # the user asked for something impossible
+    BUDGET = 3  # budget exhausted
+    RUBRIC = 4  # finished, but under threshold
+    INTERRUPTED = 5
+    QUOTA = 6  # R2, account quota exceeded
+
 
 PathOpt = typer.Option(Path("."), "--path", "-C", help="Project directory.")
 
@@ -42,7 +56,7 @@ def init(path: Path = PathOpt) -> None:
 
     d = loom_dir(root)
     fresh = not d.exists()
-    for sub in (d, d / "runs", d / "artifacts"):
+    for sub in (d, d / "runs", d / "artifacts", d / "cache"):  # FR-CLI-04
         sub.mkdir(parents=True, exist_ok=True)
     # Loom's own state is never the user's to commit.
     (d / ".gitignore").write_text("*\n", encoding="utf-8")
@@ -63,7 +77,7 @@ def status(path: Path = PathOpt) -> None:
     root = path.resolve()
     if not loom_dir(root).exists():
         typer.echo(f"not initialised — run `loom init -C {root}`")
-        raise typer.Exit(0)
+        raise typer.Exit(ExitCode.OK)
 
     try:
         cfg = load_config(cwd=root)
@@ -71,11 +85,12 @@ def status(path: Path = PathOpt) -> None:
         typer.echo(f"config error: {exc}")
         typer.echo(f"  project: {project_config_path(root)}")
         typer.echo(f"  user:    {user_config_path(Path.home())}")
-        raise typer.Exit(1) from exc
+        raise typer.Exit(ExitCode.USAGE) from exc
 
     typer.echo(f"project:     {root}")
     typer.echo(f"model:       {cfg.model}")
     typer.echo(f"judge model: {cfg.judge_model}")
+    typer.echo(f"effort:      {cfg.effort} ({cfg.max_turns} turns max), mode {cfg.mode}")
     typer.echo(f"budget:      ${cfg.budget_usd:.2f} per run, ${cfg.max_usd:.2f} per phase")
 
     runs = list_runs(root)
