@@ -1,0 +1,102 @@
+{
+  "summary": "A URL shortener library with click analytics: shorten a long URL to a short code, resolve a code back to the URL, and report how many times each code has been used.",
+  "stack": [
+    "Python 3.11",
+    "sqlite3 (standard library)",
+    "pytest"
+  ],
+  "scaffold_command": "uv init --name shortener -q && uv add --dev pytest -q && mkdir -p tests && printf 'def test_placeholder():\n    assert True\n' > tests/test_placeholder.py",
+  "file_manifest": [
+    {
+      "path": "src/shortener/store.py",
+      "purpose": "SQLite persistence, standard library only, no ORM. `Store(path)` opens and creates the database if absent, with a `links` table (code, url, created_at) and a `clicks` table (code, clicked_at). Methods: `add(code, url)`, `url_for(code) -> str | None`, `code_for(url) -> str | None`, `record_click(code)`, `click_count(code) -> int`, `close()`. `code` is unique in `links`.",
+      "depends_on": []
+    },
+    {
+      "path": "src/shortener/codes.py",
+      "purpose": "`generate(url, taken)` returns a 7-character code drawn from [a-zA-Z0-9], derived deterministically from the URL so the same URL always produces the same first candidate. `taken` is a callable returning True if a candidate is already in use; while it is, re-derive with an incrementing suffix, so a hash collision can never overwrite an existing link. No randomness: the same URL and an empty store must give the same code every time.",
+      "depends_on": []
+    },
+    {
+      "path": "src/shortener/api.py",
+      "purpose": "The public API over a Store. `shorten(url, store=None) -> str` rejects a URL that does not start with http:// or https:// by raising ValueError, returns the existing code if that URL was already shortened, and otherwise generates and stores a new one. `resolve(code, store=None) -> str` returns the URL and records exactly one click each time it is called, raising KeyError for an unknown code. `stats(code, store=None) -> dict` returns {'code', 'url', 'clicks'} and records no click. When `store` is None these use a module-level default Store at ./shortener.db.",
+      "depends_on": [
+        "src/shortener/store.py",
+        "src/shortener/codes.py"
+      ]
+    },
+    {
+      "path": "src/shortener/__init__.py",
+      "purpose": "Re-export `shorten`, `resolve`, `stats` and `Store` so that `from shortener import shorten` works. Nothing else belongs here.",
+      "depends_on": [
+        "src/shortener/api.py"
+      ]
+    },
+    {
+      "path": "tests/test_shortener.py",
+      "purpose": "pytest suite, each test using its own temporary database via the tmp_path fixture. Cover: the same URL shortens to the same code twice; two different URLs get different codes; resolve returns the original URL; resolve increments the click count and stats does not; an unknown code raises KeyError; a URL with no scheme raises ValueError; and generate() still returns a unique code when `taken` reports the first candidate as already in use. Delete tests/test_placeholder.py, which the scaffold created only so that the empty suite would pass.",
+      "depends_on": [
+        "src/shortener/api.py"
+      ]
+    },
+    {
+      "path": "README.md",
+      "purpose": "What the library is, how to install it, and a short usage example that actually runs: shorten a URL, resolve it twice, print the click count.",
+      "depends_on": [
+        "src/shortener/api.py"
+      ]
+    }
+  ],
+  "rubric": {
+    "threshold": 0.85,
+    "hard_fail": [
+      "tests",
+      "behaviour"
+    ],
+    "criteria": [
+      {
+        "name": "tests",
+        "kind": "shell",
+        "weight": 0.3,
+        "description": "The project's own test suite passes.",
+        "command": "uv run pytest -q"
+      },
+      {
+        "name": "behaviour",
+        "kind": "shell",
+        "weight": 0.25,
+        "description": "An acceptance check written with the rubric, not by the model: shorten a URL, resolve it twice, and the click count must be exactly 2 — and shortening the same URL again must return the same code. Weakening the project's own tests cannot make this pass.",
+        "command": "rm -f .acceptance.db && uv run python -c \"from shortener import Store, shorten, resolve, stats; s = Store('.acceptance.db'); c = shorten('https://example.com/one', s); assert resolve(c, s) == 'https://example.com/one'; resolve(c, s); assert stats(c, s)['clicks'] == 2, stats(c, s); assert shorten('https://example.com/one', s) == c\""
+      },
+      {
+        "name": "public_api",
+        "kind": "shell",
+        "weight": 0.1,
+        "description": "The package imports cleanly and exposes its documented public API.",
+        "command": "uv run python -c \"from shortener import shorten, resolve, stats, Store\""
+      },
+      {
+        "name": "edge_cases",
+        "kind": "judge",
+        "weight": 0.2,
+        "description": "The tests cover the failure modes, not only the happy path.",
+        "question": "Do these tests genuinely cover the edge cases the design names — an unknown code, a URL with no scheme, the same URL shortened twice, and a code collision — with real assertions rather than tests that always pass? Score 0.0 if a listed case is missing, and 0.0 if any test is skipped, marked xfail, or asserts nothing.",
+        "evidence_paths": [
+          "tests/*.py",
+          "src/shortener/codes.py"
+        ]
+      },
+      {
+        "name": "readable",
+        "kind": "judge",
+        "weight": 0.15,
+        "description": "A person who did not write it can pick it up.",
+        "question": "Is this code clear enough for a new maintainer: type hints on public functions, docstrings that say what a function does rather than restating its name, no dead code, and a README whose usage example matches the actual API? Score on clarity only, not on features.",
+        "evidence_paths": [
+          "src/shortener/*.py",
+          "README.md"
+        ]
+      }
+    ]
+  }
+}

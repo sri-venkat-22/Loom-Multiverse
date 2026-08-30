@@ -263,3 +263,37 @@ One line per non-obvious choice, appended by whoever made it.
   and spent real money. Verified before the change: `pytest -m "not slow"` collected 360 tests
   including the live recorder. Skipping `live` by keyword unless the `-m` expression names it
   makes every marker expression composable and safe.
+
+## The urlshortener fixture Design (2026-08-31)
+
+*Plan §10 lists this as not-to-delegate. Written on request; the judgment below is what wants
+reviewing, not the JSON.*
+
+- **A sufficient spec names the interface, not the intention.** Every `purpose` in the manifest
+  gives signatures, return types and the errors raised — `resolve(code, store=None) -> str`
+  "records exactly one click each time it is called", `stats` "records no click". A purpose like
+  "handles storage" produces code that handles storage in whatever way the model felt like, and
+  then the rubric is grading a coin toss. This is the property `prompts/design.md` will be tuned
+  to reproduce (FR-DES-04), so it is the fixture's most load-bearing decision.
+- **At least one hard-fail criterion must be one the model does not write.** `behaviour` shortens
+  a URL, resolves it twice and asserts the click count is exactly 2. If the only hard fail were
+  "the model's own test suite passes", weakening a test would be enough to clear the rubric and
+  FR-BUILD-04's prompt clause would be the only thing standing in the way. A prompt is not an
+  enforcement mechanism. `tests/test_fixtures.py` asserts this property of every fixture.
+- Stdlib-only (`sqlite3`), with `pytest` installed by the scaffold. The milestone measures
+  whether a cheap model can build a repo; turns spent on dependency resolution are measuring
+  something else, at $1 a run.
+- The acceptance command starts with `rm -f .acceptance.db`. Without it the database survives
+  between grading rounds, the click count accumulates, and a hard-fail criterion starts failing
+  on round two for a reason that is nobody's fault.
+- Six files and five criteria is the scope ceiling: enough that the manifest DAG, both criterion
+  kinds and the hard-fail path all get exercised, small enough to fit 25 turns and $1.
+- `tests/test_fixtures.py` runs every shell criterion through the deny-list, compiles the inline
+  Python in each one, and checks each judge's evidence globs against the manifest. All four
+  guards were verified against a deliberately broken copy before being trusted. The failure
+  these prevent is a live run that costs a dollar and fails for a reason unrelated to the thing
+  being measured.
+- Verified by running the real `scaffold()` against the real command: `uv run pytest -q` exits 0
+  on the placeholder suite, `import shortener` resolves, and `.venv` stays out of git because
+  `uv init` writes a `.gitignore` covering it — so per-turn snapshots stay small. `.pytest_cache`
+  is *not* in that `.gitignore`, which is precisely the case WP-4.2's memo re-stamp handles.
