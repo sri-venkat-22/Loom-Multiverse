@@ -1,0 +1,70 @@
+{
+  "_note": "HAND-WRITTEN placeholder, not a recording. Reproduces the documented litellm shape for an Anthropic model, including a cached-prompt usage block. Replace with `make cassettes` once a key is available; the tests that read it do not care which it is.",
+  "entries": [
+    {
+      "model": "anthropic/claude-sonnet-5",
+      "messages": [{"role": "system", "content": "you build software"}],
+      "tools": ["read_file", "write_file", "str_replace", "run_bash"],
+      "raw": {
+        "id": "chatcmpl-8f2b1c4a",
+        "created": 1756600000,
+        "model": "claude-sonnet-5-20250929",
+        "object": "chat.completion",
+        "system_fingerprint": null,
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "message": {
+              "content": null,
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "index": 0,
+                  "id": "toolu_01A9FjkPqR",
+                  "type": "function",
+                  "function": {
+                    "name": "read_file",
+                    "arguments": "{\"path\": \"README.md\"}"
+                  }
+                }
+              ],
+              "function_call": null
+            }
+          }
+        ],
+        "usage": {
+          "completion_tokens": 84,
+          "prompt_tokens": 1523,
+          "total_tokens": 1607,
+          "prompt_tokens_details": {"cached_tokens": 1024, "audio_tokens": 0},
+          "cache_creation_input_tokens": 499,
+          "cache_read_input_tokens": 1024
+        }
+      }
+    },
+    {
+      "model": "anthropic/claude-sonnet-5",
+      "messages": [{"role": "system", "content": "you build software"}],
+      "tools": ["read_file", "write_file", "str_replace", "run_bash"],
+      "raw": {
+        "id": "chatcmpl-8f2b1c4b",
+        "created": 1756600012,
+        "model": "claude-sonnet-5-20250929",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "The suite is green and the README documents the two endpoints.",
+              "role": "assistant",
+              "tool_calls": null
+            }
+          }
+        ],
+        "usage": {"completion_tokens": 31, "prompt_tokens": 1802, "total_tokens": 1833}
+      }
+    }
+  ]
+}

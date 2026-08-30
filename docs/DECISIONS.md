@@ -83,3 +83,64 @@ One line per non-obvious choice, appended by whoever made it.
 - WP-8.2's `/model` picker needs a model catalogue (name, blurb, price, tier) that `loom/config.py`
   does not have — today there is `MODEL_TIERS` (two entries) and `DEFAULT_PRICE_TABLE` (three). The
   drawing lists four, including `ollama/qwen2.5-coder`. Deferred to 8.2 rather than guessed at now.
+
+## Phase 2 — the agent core (2026-08-31)
+
+- `litellm` lands as a runtime dependency (NFR-MAINT-05). It is the provider-agnostic seam
+  `CLAUDE.md` mandates, and nothing else in the tree may import it. It costs ~1.2 s to import,
+  which is why `loom/cli.py` never reaches `providers.py` and why NFR-PERF-01's cold-start test
+  exists.
+- `providers.py` sets `LITELLM_LOCAL_MODEL_COST_MAP=True` before importing litellm. litellm
+  otherwise fetches its price map from GitHub *at import time*; Loom makes no unannounced
+  outbound call, and a stale local map is exactly what `DEFAULT_PRICE_TABLE` is the fallback for.
+- The price-table fallback is confirmed necessary, not theoretical: `completion_cost()` prices
+  `openrouter/qwen/qwen3-coder` fine but raises a bare `Exception` on `dashscope/qwen3-coder-next`
+  ("this model isn't mapped yet"). That is FR-COST-02's failure mode, reproduced in a test.
+- The fallback announces itself as a `budget_warning` event with `reason="price_table_fallback"`
+  rather than a new event kind. What it warns about is that the budget's numbers are estimated
+  rather than measured, which is what that kind already means; a new kind would need an SRS §6
+  edit for no gain.
+- `to_response()` is a pure function, separate from `LiteLLMProvider`. That is what lets a
+  cassette replay a recorded raw payload through the real normaliser — replaying a pre-built
+  `Response` would test nothing, since `FakeLLM` already does that and cannot see shape drift.
+- Command substitution (`$(…)`, backticks, `<(…)`) is denied outright rather than analysed.
+  SEC-02 only requires denying substitution that reaches outside the jail, but deciding that
+  statically is undecidable and a build has no honest need for it.
+- The bash deny-list recurses into `sh -c '<command>'`. Without it the entire list is one
+  `sh -c` away from being decorative.
+- The deny-list checks path arguments only for commands whose arguments *are* paths
+  (`PATH_COMMANDS`). Checking every token would deny
+  `git commit -m "fix the /etc/hosts parser"`, and a deny-list that blocks the build loop is
+  worse than none. `tests/test_security.py` carries as many allow cases as deny cases for
+  exactly this reason.
+- General-purpose network commands (`curl`, `ssh`, `gh`, …) are denied but package managers are
+  not: a build cannot install its dependencies without them. SEC-07 is a boundary, not an
+  airgap, and SEC-08's per-turn snapshot is the real backstop.
+- `read_file` returns raw file content, not numbered lines. Numbering helps a human read and
+  hurts `str_replace`, which needs the model to reproduce the text exactly.
+- Tool argument *errors* come back as strings the model can correct itself from; security
+  refusals (`JailEscape`, `CommandDenied`) raise, and the loop frames them as tool messages.
+  Same destination, but a refusal is never silently indistinguishable from a typo.
+- `ToolRegistry.execute` ignores unexpected arguments rather than forbidding them: a stray key
+  is not worth failing a call the model otherwise got right, and a *misspelled required* one
+  still fails as missing.
+- `LoopResult` lives in `loop.py`, not `contracts.py`, despite SRS §6 listing it in the data
+  model. It is not a phase artifact and nothing persists it. SRS §6 is the bug.
+- The loop's `rubric` is typed as a local `Grader` protocol, not `contracts.Rubric`: the
+  contract describes a rubric, this is something that can *run* one. It keeps WP-4.2 free to
+  land `rubric.py` without the loop importing it.
+- Stall detection needs a baseline round plus `STALL_ROUNDS` non-improving ones — four graded
+  rounds, not three. There is nothing for the first round to fail to improve on.
+- `"blocked"` is returned when a response carries neither text nor tool calls. Re-prompting an
+  empty response just buys another one.
+- Retry jitter is injected (`jitter=`) so the backoff test asserts exact growth. With ±50%
+  jitter the delay bands for consecutive attempts overlap, so `delays[1] > delays[0]` is a flake.
+- `tests/cassettes/*.json` are currently **hand-written** to the documented provider shapes,
+  not recordings — no key was available. They reproduce the three Qwen quirks the adapter exists
+  for (arguments as a JSON string, a tool call with no id, a response with no `usage` block).
+  `make cassettes` overwrites them with real recordings and no test changes.
+- `ask_user`'s registered handler raises. The loop routes the tool to `ask_user_fn` (FR-ASK-04),
+  so the body is unreachable — and says so loudly if a refactor ever makes it reachable.
+- No `prompt_fn` behaves identically to `--yes`. A piped run has no terminal to ask through;
+  that is a default, not an error, and it is what keeps FR-HEADLESS from needing a second code
+  path.

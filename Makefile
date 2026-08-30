@@ -1,4 +1,4 @@
-.PHONY: check test lint types
+.PHONY: check test lint types cassettes
 
 check: lint types test
 
@@ -10,3 +10,7 @@ lint:
 
 types:
 	uv run mypy loom
+
+# Re-record the provider cassettes. Real API calls, real money — see tests/cassettes/.
+cassettes:
+	uv run pytest -m live tests/test_providers.py -k record -q

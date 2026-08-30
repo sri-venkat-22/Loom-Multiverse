@@ -5,6 +5,7 @@ description = "CLI that takes a founder's idea and produces a working, tested co
 requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
+    "litellm>=1.98.0",
     "pydantic>=2.7",
     "typer>=0.12",
 ]

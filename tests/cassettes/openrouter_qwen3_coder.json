@@ -1,0 +1,55 @@
+{
+  "_note": "HAND-WRITTEN placeholder, not a recording. Reproduces the three Qwen-via-OpenRouter quirks the adapter exists for: tool arguments as a JSON string, a tool call with no id, and a final response with no usage block at all. Replace with `make cassettes`.",
+  "entries": [
+    {
+      "model": "openrouter/qwen/qwen3-coder",
+      "messages": [{"role": "system", "content": "you build software"}],
+      "tools": ["read_file", "write_file", "str_replace", "run_bash"],
+      "raw": {
+        "id": "gen-1756600000-Xk2p",
+        "created": 1756600000,
+        "model": "qwen/qwen3-coder",
+        "object": "chat.completion",
+        "provider": "Alibaba",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "message": {
+              "content": "",
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "run_bash",
+                    "arguments": "{\"command\": \"pytest -q\"}"
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "usage": {"completion_tokens": 41, "prompt_tokens": 980, "total_tokens": 1021}
+      }
+    },
+    {
+      "model": "openrouter/qwen/qwen3-coder",
+      "messages": [{"role": "system", "content": "you build software"}],
+      "tools": ["read_file", "write_file", "str_replace", "run_bash"],
+      "raw": {
+        "id": "gen-1756600030-Xk2q",
+        "created": 1756600030,
+        "model": "qwen/qwen3-coder",
+        "object": "chat.completion",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {"content": "Done — 6 tests pass.", "role": "assistant"}
+          }
+        ]
+      }
+    }
+  ]
+}

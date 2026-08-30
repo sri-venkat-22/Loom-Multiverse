@@ -1,0 +1,486 @@
+"""FR-AGENT-07/08/09, FR-COST-02, FR-EVAL-03 — the adapter, and the cassettes that outlive it.
+
+Tiers: everything here is unit or cassette (no network, runs in CI). The one `@pytest.mark.live`
+test at the bottom is the recorder behind `make cassettes`.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from loom.agent import providers
+from loom.agent.loop import run_agent_loop
+from loom.agent.providers import (
+    LiteLLMProvider,
+    ProviderError,
+    normalise_messages,
+    to_response,
+)
+from loom.agent.tools.registry import ToolRegistry, tool
+from loom.config import Price
+from loom.ledger import Ledger
+from loom.testing.cassette import CassetteExhausted, CassetteProvider, load_cassette
+
+CASSETTES = Path(__file__).resolve().parent / "cassettes"
+ANTHROPIC = CASSETTES / "anthropic_claude_sonnet.json"
+QWEN = CASSETTES / "openrouter_qwen3_coder.json"
+
+
+@pytest.fixture(autouse=True)
+def forget_price_warnings() -> None:
+    """The fallback warns once *per process*; each test wants a fresh process's worth."""
+    providers._PRICED_BY_FALLBACK.clear()
+
+
+# --------------------------------------------------------------------------- FR-AGENT-07
+
+
+def test_messages_are_rebuilt_with_only_the_keys_a_provider_accepts() -> None:
+    """A litellm dump carries `None` fields and provider extras; sending them back 400s."""
+    out = normalise_messages(
+        [
+            {
+                "role": "assistant",
+                "content": None,
+                "function_call": None,
+                "annotations": [],
+                "provider_specific_fields": {"x": 1},
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": '{"text": "hi"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "echo", "content": "hi", "extra": 9},
+        ]
+    )
+    assert out[0] == {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "echo", "arguments": '{"text": "hi"}'},
+            }
+        ],
+    }
+    assert out[1] == {"role": "tool", "content": "hi", "tool_call_id": "c1", "name": "echo"}
+
+
+def test_tool_call_arguments_leave_as_a_json_string() -> None:
+    """They arrive both ways; they must go back out one way."""
+    out = normalise_messages(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "function": {"name": "echo", "arguments": {"text": "hi"}}}
+                ],
+            }
+        ]
+    )
+    assert out[0]["tool_calls"][0]["function"]["arguments"] == '{"text": "hi"}'
+
+
+def test_a_tool_call_with_no_id_gets_one() -> None:
+    out = normalise_messages(
+        [{"role": "assistant", "tool_calls": [{"function": {"name": "echo", "arguments": "{}"}}]}]
+    )
+    assert out[0]["tool_calls"][0]["id"] == "call_0"
+
+
+def test_a_message_with_neither_content_nor_tools_still_has_content() -> None:
+    assert normalise_messages([{"role": "assistant", "content": None}]) == [
+        {"role": "assistant", "content": ""}
+    ]
+
+
+def test_an_empty_tool_calls_list_is_dropped_rather_than_sent() -> None:
+    assert normalise_messages([{"role": "assistant", "content": "hi", "tool_calls": []}]) == [
+        {"role": "assistant", "content": "hi"}
+    ]
+
+
+# --------------------------------------------------------------------------- FR-EVAL-03
+
+
+def test_the_anthropic_cassette_normalises_to_a_response() -> None:
+    entries = load_cassette(ANTHROPIC)
+    first = to_response(entries[0]["raw"], model="anthropic/claude-sonnet-5")
+    assert first.text is None
+    assert [c.name for c in first.tool_calls] == ["read_file"]
+    assert first.tool_calls[0].arguments == {"path": "README.md"}
+    assert first.tool_calls[0].id == "toolu_01A9FjkPqR"
+    assert (first.in_tokens, first.out_tokens) == (1523, 84)
+    assert first.usd_cost > 0
+
+
+def test_the_qwen_cassette_survives_all_three_of_its_quirks() -> None:
+    """Arguments as a JSON string, a tool call with no id, and a response with no usage block.
+
+    None of these are visible to FakeLLM, which is the entire reason this tier exists.
+    """
+    entries = load_cassette(QWEN)
+    first = to_response(entries[0]["raw"], model="openrouter/qwen/qwen3-coder")
+    assert first.tool_calls[0].arguments == {"command": "pytest -q"}  # was a string
+    assert first.tool_calls[0].id == "call_0"  # was absent
+    assert first.text is None  # was ""
+
+    second = to_response(entries[1]["raw"], model="openrouter/qwen/qwen3-coder")
+    assert second.text == "Done — 6 tests pass."
+    assert (second.in_tokens, second.out_tokens) == (0, 0)  # no usage block at all
+    assert second.usd_cost == 0.0  # and so, honestly, no cost
+
+
+def test_both_providers_produce_the_same_response_shape() -> None:
+    """WP-2.7a's done-when, stated as a test: one Anthropic model and one Qwen model reduce to
+    identical `Response` shapes, or the loop has two code paths and only knows about one."""
+    shapes = []
+    for path, model in (
+        (ANTHROPIC, "anthropic/claude-sonnet-5"),
+        (QWEN, "openrouter/qwen/qwen3-coder"),
+    ):
+        response = to_response(load_cassette(path)[0]["raw"], model=model)
+        shapes.append(
+            {k: type(v).__name__ for k, v in response.model_dump(exclude={"raw", "text"}).items()}
+        )
+    assert shapes[0] == shapes[1]
+
+
+async def test_a_cassette_replays_in_order_and_runs_out_loudly() -> None:
+    provider = CassetteProvider.from_file(QWEN)
+    first = await provider.complete([{"role": "user", "content": "go"}])
+    assert first.tool_calls[0].name == "run_bash"
+    await provider.complete([{"role": "user", "content": "go"}])
+    assert provider.remaining == 0
+    with pytest.raises(CassetteExhausted, match="make cassettes"):
+        await provider.complete([{"role": "user", "content": "go"}])
+
+
+async def test_a_cassette_drives_the_real_loop(tmp_path: Path) -> None:
+    """The end the cassettes exist for: recorded bytes, real adapter, real loop, no network."""
+    from loom.agent.tools.bash import bash_tool
+
+    result = await run_agent_loop(
+        provider=CassetteProvider.from_file(QWEN),
+        system="you build software",
+        task="make the tests pass",
+        tools=ToolRegistry([bash_tool(tmp_path)]),
+        max_turns=5,
+        max_usd=1.0,
+    )
+    assert result.status == "passed"
+    assert [m["role"] for m in result.messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert "exit" in result.messages[3]["content"]  # the recorded `pytest -q` really ran
+
+
+# --------------------------------------------------------------------------- FR-COST-02
+
+
+def test_an_unpriced_model_falls_back_to_the_price_table_instead_of_raising() -> None:
+    """`litellm.completion_cost()` raises on `dashscope/*`. After the tokens are already paid
+    for is the worst possible moment to find that out."""
+    events: list[tuple[str, dict[str, Any]]] = []
+    raw = {
+        "model": "qwen3-coder-next",
+        "choices": [{"message": {"content": "hi"}}],
+        "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000},
+    }
+    cost = to_response(
+        raw,
+        model="dashscope/qwen3-coder-next",
+        price_table={"dashscope/qwen3-coder-next": Price(input_per_mtok=0.3, output_per_mtok=0.6)},
+        on_event=lambda kind, **f: events.append((kind, f)),
+    ).usd_cost
+
+    assert cost == pytest.approx(0.9)
+    assert events == [
+        (
+            "budget_warning",
+            {
+                "reason": "price_table_fallback",
+                "model": "dashscope/qwen3-coder-next",
+                "priced": True,
+            },
+        )
+    ]
+
+
+def test_a_model_in_no_table_at_all_costs_zero_and_still_does_not_raise() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    response = to_response(
+        {
+            "model": "who/knows",
+            "choices": [{"message": {"content": "hi"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 10},
+        },
+        model="who/knows",
+        price_table={},
+        on_event=lambda kind, **f: events.append((kind, f)),
+    )
+    assert response.usd_cost == 0.0
+    assert events[0][1]["priced"] is False
+
+
+def test_the_fallback_warns_once_per_model_not_once_per_call() -> None:
+    events: list[str] = []
+    raw = {
+        "model": "x",
+        "choices": [{"message": {"content": "hi"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 10},
+    }
+    for _ in range(3):
+        to_response(
+            raw,
+            model="dashscope/unknown",
+            price_table={},
+            on_event=lambda kind, **f: events.append(kind),
+        )
+    assert events == ["budget_warning"]
+
+
+def test_a_priced_model_uses_the_measured_cost_not_the_table() -> None:
+    """When litellm can price it, its number wins — the table is a fallback, not an override."""
+    response = to_response(
+        {
+            "model": "gpt-4o-mini",
+            "choices": [{"message": {"content": "hi"}}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 1000},
+        },
+        model="gpt-4o-mini",
+        price_table={"gpt-4o-mini": Price(input_per_mtok=999.0, output_per_mtok=999.0)},
+    )
+    assert 0 < response.usd_cost < 1.0
+
+
+# --------------------------------------------------------------------------- FR-AGENT-08
+
+
+class Throttled(Exception):
+    status_code = 429
+
+
+class BadRequest(Exception):
+    status_code = 400
+
+
+def flaky(*failures: Exception, then: dict[str, Any] | None = None) -> Any:
+    queue = list(failures)
+    calls: list[dict[str, Any]] = []
+
+    async def acompletion(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        if queue:
+            raise queue.pop(0)
+        return then or {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+    acompletion.calls = calls  # type: ignore[attr-defined]
+    return acompletion
+
+
+def recording_sleep() -> Any:
+    delays: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    sleep.delays = delays  # type: ignore[attr-defined]
+    return sleep
+
+
+async def test_a_429_is_retried_with_backoff_and_one_event_each() -> None:
+    events: list[dict[str, Any]] = []
+    sleep = recording_sleep()
+    call = flaky(Throttled("slow down"), Throttled("slow down"))
+    provider = LiteLLMProvider(
+        "openrouter/qwen/qwen3-coder",
+        acompletion=call,
+        sleep=sleep,
+        on_event=lambda kind, **f: events.append({"kind": kind, **f}),
+        base_delay=1.0,
+        jitter=lambda low, high: 1.0,
+    )
+
+    response = await provider.complete([{"role": "user", "content": "go"}])
+
+    assert response.text == "ok"
+    assert len(call.calls) == 3
+    retries = [e for e in events if e["kind"] == "retry"]
+    assert len(retries) == 2
+    assert [e["attempt"] for e in retries] == [1, 2]
+    assert all(e["of"] == 4 and "Throttled" in e["error"] for e in retries)
+    assert sleep.delays == [1.0, 2.0]  # exponential, with the jitter pinned
+
+
+async def test_the_backoff_is_jittered_within_its_band() -> None:
+    """Every retry in a fleet waking at the same instant is how one 429 becomes an outage."""
+    sleep = recording_sleep()
+    provider = LiteLLMProvider(
+        "m", acompletion=flaky(*[Throttled("no") for _ in range(3)]), sleep=sleep, base_delay=1.0
+    )
+    await provider.complete([{"role": "user", "content": "go"}])
+    assert len(sleep.delays) == 3
+    assert not any(d in (1.0, 2.0, 4.0) for d in sleep.delays), "the jitter is not applied"
+    for attempt, delay in enumerate(sleep.delays):
+        assert 0.5 * 2**attempt <= delay <= 1.5 * 2**attempt
+
+
+async def test_a_400_is_not_retried() -> None:
+    sleep = recording_sleep()
+    call = flaky(BadRequest("your tools are malformed"))
+    provider = LiteLLMProvider("m", acompletion=call, sleep=sleep)
+    with pytest.raises(BadRequest):
+        await provider.complete([{"role": "user", "content": "go"}])
+    assert len(call.calls) == 1 and sleep.delays == []
+
+
+async def test_retries_are_bounded() -> None:
+    sleep = recording_sleep()
+    call = flaky(*[Throttled("no") for _ in range(10)])
+    provider = LiteLLMProvider("m", acompletion=call, sleep=sleep, max_retries=3)
+    with pytest.raises(Throttled):
+        await provider.complete([{"role": "user", "content": "go"}])
+    assert len(call.calls) == 3, "a bounded retry that is not bounded is an outage amplifier"
+
+
+async def test_an_untyped_rate_limit_is_recognised_by_class_name() -> None:
+    """litellm's own exceptions do not all carry `status_code`."""
+
+    class RateLimitError(Exception):
+        pass
+
+    call = flaky(RateLimitError("429"))
+    provider = LiteLLMProvider("m", acompletion=call, sleep=recording_sleep())
+    assert (await provider.complete([{"role": "user", "content": "go"}])).text == "ok"
+
+
+def test_provider_error_exists_for_the_unreachable_branch() -> None:
+    assert issubclass(ProviderError, RuntimeError)
+
+
+# --------------------------------------------------------------------------- FR-AGENT-09
+
+
+async def test_anthropic_gets_a_prompt_cache_breakpoint_on_the_system_block() -> None:
+    call = flaky()
+    provider = LiteLLMProvider("anthropic/claude-sonnet-5", acompletion=call)
+    await provider.complete(
+        [{"role": "system", "content": "long stable prompt"}, {"role": "user", "content": "go"}]
+    )
+    system = call.calls[0]["messages"][0]
+    assert system["content"] == [
+        {"type": "text", "text": "long stable prompt", "cache_control": {"type": "ephemeral"}}
+    ]
+
+
+async def test_a_qwen_model_is_left_alone() -> None:
+    """DashScope caches implicitly; an OpenAI-compatible endpoint would just be confused."""
+    call = flaky()
+    provider = LiteLLMProvider("openrouter/qwen/qwen3-coder", acompletion=call)
+    await provider.complete([{"role": "system", "content": "long stable prompt"}])
+    assert call.calls[0]["messages"][0]["content"] == "long stable prompt"
+
+
+# --------------------------------------------------------------------------- wiring
+
+
+async def test_tools_are_passed_through_and_no_litellm_specific_kwarg_is() -> None:
+    """The addendum's `caching=True` is litellm's *response* cache — in an agent loop it can
+    replay one tool call forever."""
+
+    @tool
+    def echo(text: str) -> str:
+        """Echo."""
+        return text
+
+    call = flaky()
+    provider = LiteLLMProvider("m", acompletion=call)
+    await provider.complete([{"role": "user", "content": "go"}], ToolRegistry([echo]).specs())
+
+    sent = call.calls[0]
+    assert sent["tools"][0]["function"]["name"] == "echo"
+    assert sent["tool_choice"] == "auto"
+    assert "caching" not in sent
+
+
+async def test_every_call_is_ledgered_under_its_phase(tmp_path: Path) -> None:
+    """Ground rule 8 — every WP that touches a model call records its cost."""
+    ledger = Ledger(tmp_path / "ledger.db")
+    provider = LiteLLMProvider(
+        "openrouter/qwen/qwen3-coder",
+        acompletion=flaky(
+            then={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 500, "completion_tokens": 100},
+            }
+        ),
+        ledger=ledger,
+        phase="build",
+        run_id="run-1",
+    )
+    await provider.complete([{"role": "user", "content": "go"}])
+
+    row = ledger.rows()[0]
+    assert (row["phase"], row["model"], row["run_id"]) == (
+        "build",
+        "openrouter/qwen/qwen3-coder",
+        "run-1",
+    )
+    assert (row["in_tok"], row["out_tok"]) == (500, 100)
+    assert row["seconds"] > 0
+    assert ledger.by_phase() == {"build": pytest.approx(row["usd"])}
+
+
+def test_it_satisfies_the_provider_protocol() -> None:
+    from loom.contracts import Provider
+
+    assert isinstance(LiteLLMProvider("m"), Provider)
+    assert isinstance(CassetteProvider([]), Provider)
+
+
+# --------------------------------------------------------------------------- make cassettes
+
+
+@pytest.mark.live
+async def test_record_cassettes() -> None:
+    """`make cassettes` — real calls, real money, one file per model.
+
+    Overwrites the fixtures above with genuine recordings. Everything else in this file then
+    runs against those, unchanged.
+    """
+    from loom.testing.cassette import Recorder
+
+    @tool
+    def read_file(path: str) -> str:
+        """Read a file."""
+        return "# A URL shortener\n"
+
+    tools = ToolRegistry([read_file])
+    for model, path in (
+        ("anthropic/claude-sonnet-5", ANTHROPIC),
+        ("openrouter/qwen/qwen3-coder", QWEN),
+    ):
+        recorder = Recorder(LiteLLMProvider(model), path, model=model)
+        await run_agent_loop(
+            provider=recorder,
+            system="you build software",
+            task="Read README.md, then say in one sentence what the project is.",
+            tools=tools,
+            max_turns=4,
+            max_usd=0.25,
+        )
+        assert load_cassette(path), f"nothing recorded for {model}"

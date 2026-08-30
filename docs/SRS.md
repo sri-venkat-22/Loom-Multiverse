@@ -35,6 +35,14 @@
 | 1.3 | Config precedence + cost ledger | ✅ landed |
 | 1.4 | FakeLLM | ✅ landed |
 | 1.5 | `loom init` / `loom status` | ✅ landed |
+| 2.1 | Tool registry + schema generation | ✅ landed |
+| 2.2 | Filesystem tools | ✅ landed |
+| 2.3 | Path jail + bash deny-list | ✅ landed |
+| 2.4 | Bash tool | ✅ landed |
+| 2.6 | Agent loop | ✅ landed |
+| 2.7a | litellm adapter | ✅ landed |
+| 2.8 | `ask_user` | ✅ landed |
+| 2.9 | Cassette recorder/replayer | ✅ landed (fixtures hand-written until `make cassettes` runs) |
 | everything else | — | not started |
 
 ---
@@ -1373,14 +1381,14 @@ passwords hashed with argon2id; rate limits on all auth endpoints; only the usag
 | `FR-CFG-01/02`, `FR-COST-01` | 1.3 | ✅ landed |
 | `NFR-TEST-01` (unit tier) | 1.4 | ✅ landed |
 | `FR-CLI-04`, `FR-DIAG-01`, `FR-WS-04` | 1.5 | ✅ landed |
-| `FR-TOOL-01` | 2.1 | todo |
-| `FR-TOOL-02/03/04/07` | 2.2 | todo |
-| `SEC-01/02/06` | 2.3 | todo |
-| `FR-TOOL-05` | 2.4 | todo |
-| `FR-AGENT-01…06` | 2.6 | todo |
-| `FR-AGENT-07/08/09`, `FR-COST-02` | 2.7a | todo |
-| `FR-ASK-01…05` | 2.8 | todo |
-| `FR-EVAL-03` | 2.9 | todo |
+| `FR-TOOL-01` | 2.1 | ✅ landed |
+| `FR-TOOL-02/03/04/07` | 2.2 | ✅ landed |
+| `SEC-01/02/06`, `FR-CFG-06` | 2.3 | ✅ landed |
+| `FR-TOOL-05` | 2.4 | ✅ landed |
+| `FR-AGENT-01…06` | 2.6 | ✅ landed |
+| `FR-AGENT-07/08/09`, `FR-COST-02` | 2.7a | ✅ landed |
+| `FR-ASK-01…05` | 2.8 | ✅ landed |
+| `FR-EVAL-03` | 2.9 | ✅ landed |
 | `FR-PIPE-05` | 3.0 | todo |
 | `FR-PIPE-06` | 3.1 | todo |
 | `FR-VAL-01…04`, `SEC-03/04` | 3.2 | todo |
