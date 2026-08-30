@@ -3,6 +3,7 @@
 CLI that takes a founder's idea and produces a working, tested codebase.
 Pipeline: Validate -> Plan -> Design -> Build+Test.
 Requirements: `docs/SRS.md`. Work packages: `loom-agent-build-plan-v2.md`.
+Terminal design (WP-8.x): `design/terminal/` — read it before any `loom/tui/` work.
 
 ## Invariants — do not violate without asking
 - Python 3.11+. No Node dependency, ever.
@@ -59,3 +60,6 @@ loom/testing/fake_llm.py  loom/prompts/*.md  loom/blueprints/*/
 - Append one line to docs/DECISIONS.md for any non-obvious choice.
 - `docs/SRS.md` is the requirements reference; cite the requirement ID (e.g. `FR-RUB-03`) in the
   test that covers it. Where the SRS and the code disagree, the code wins and the SRS is the bug.
+- `design/terminal/project/Loom Terminal Interface.dc.html` is the drawn spec for the TUI. Its §12
+  is the `theme.toml` schema and the `loom/tui/theme.py` shape; nothing in a widget may hard-code
+  a colour, glyph, spinner frame or gradient stop.

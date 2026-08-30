@@ -103,6 +103,9 @@ packages are written against.
 4. `loom/contracts.py` — the normative schema for every artifact in §6.
 5. `loom DOC .pdf` — the stakeholder's terminal-experience requirements (screenshots + notes),
    the source for §3 of this document.
+6. `design/terminal/` — the Claude Design handoff bundle for the terminal interface: ten
+   storyboarded moments, the logo candidates, the asset kit, and the theme as data. Every frame is
+   annotated with the requirement it satisfies. The drawn spec for WP-8.1/8.2/8.3.
 
 ### 1.5 Release plan
 
@@ -255,9 +258,11 @@ fully functional in BYOK mode with the account service unreachable (`FR-ACCT-09`
 
 ### 2.6 Assumptions and dependencies
 
-- **A-1** — The stakeholder will supply animation assets and a colour palette later. Until then the
-  theme ships with a built-in default (`loom/tui/theme.py`), and every animation asset is loaded
-  through a theme lookup so swapping it is a data change, not a code change (`FR-ANIM-05`).
+- **A-1** — ~~The stakeholder will supply animation assets and a colour palette later.~~ **Resolved
+  2026-08-30**: `design/terminal/` supplies the palette, the glyph kit, five spinner sets, the
+  gradient stops, three logo candidates and six wordmark animations, together with the
+  `.loom/theme.toml` schema they load through. Every animation asset is still loaded through a
+  theme lookup, so swapping it stays a data change, not a code change (`FR-ANIM-05`).
 - **A-2** — A cheap model (Qwen-class) can drive the build loop to a passing rubric. WP-0's four
   numbers confirm or refute this. Until they are recorded, `max_turns`, `max_usd` and the model
   defaults in `loom/config.py` are placeholders.

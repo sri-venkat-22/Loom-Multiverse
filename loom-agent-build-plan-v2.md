@@ -265,8 +265,10 @@ or more, expect to split it.
 
 ### 6.6 Backfill — the terminal experience
 
-New in revision 2.1. Specified in `docs/SRS.md` §3 and §4.1–4.5; the requirement IDs in the
-"Done when" column are the acceptance tests. None of it gates WP-4.5 — but 8.1 and 8.2 are what
+New in revision 2.1. Specified in `docs/SRS.md` §3 and §4.1–4.5, and **drawn in
+`design/terminal/`** — ten storyboarded moments, each frame annotated with the requirement it
+satisfies, plus the theme as data. Read the drawing before opening a session on any of these;
+the requirement IDs in the "Done when" column are the acceptance tests. None of it gates WP-4.5 — but 8.1 and 8.2 are what
 turn a working pipeline into a product someone will actually sit in front of, so they land before
 R1 ships, not after.
 

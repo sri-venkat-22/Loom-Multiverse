@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/classical-2c71cbb1-25b2-4c57-9aaf-85b6409be944/styles.css">
+<script src="_ds/classical-2c71cbb1-25b2-4c57-9aaf-85b6409be944/_ds_bundle.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=Lora:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--mono:"JetBrains Mono",ui-monospace,Menlo,monospace}
+body{margin:0;background:#201f1d}
+a{color:#7d5411;text-decoration:none}
+a:hover{color:#5a3b0a}
+@keyframes lmBlink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes lmSweep{from{background-position:0% 50%}to{background-position:200% 50%}}
+@keyframes lmSpin8{from{transform:translateY(0)}to{transform:translateY(-272px)}}
+@keyframes lmSpin4{from{transform:translateY(0)}to{transform:translateY(-136px)}}
+@keyframes lmSpin6{from{transform:translateY(0)}to{transform:translateY(-204px)}}
+@keyframes lmWeaveRow{0%{clip-path:inset(0 100% 0 0)}22%,88%{clip-path:inset(0 0 0 0)}100%{clip-path:inset(0 100% 0 0)}}
+@keyframes lmRevealX{0%{clip-path:inset(0 100% 0 0)}46%,88%{clip-path:inset(0 0 0 0)}100%{clip-path:inset(0 100% 0 0)}}
+@keyframes lmShuttleRun{0%{left:-3%;opacity:0}6%{opacity:1}44%{left:100%;opacity:1}50%,100%{left:100%;opacity:0}}
+@keyframes lmWarpDrop{0%{clip-path:inset(0 0 100% 0)}30%,88%{clip-path:inset(0 0 0 0)}100%{clip-path:inset(0 0 100% 0)}}
+@keyframes lmWarpSlide{from{background-position:0 0}to{background-position:0 26px}}
+@keyframes lmBeat{0%{transform:scaleX(1.24);opacity:.3}11%{transform:scaleX(.965);opacity:1}15%{transform:scaleX(1.012)}20%,88%{transform:scaleX(1);opacity:1}100%{transform:scaleX(1.24);opacity:.3}}
+@keyframes lmSelvedge{0%,6%{opacity:0}12%{opacity:1}44%,100%{opacity:.22}}
+@keyframes lmDraw{0%,10%{transform:scaleX(0)}38%,90%{transform:scaleX(1)}100%{transform:scaleX(0)}}
+@keyframes lmPark{0%,36%{opacity:0;transform:translateX(-12px)}48%,90%{opacity:1;transform:none}100%{opacity:0;transform:translateX(-12px)}}
+@keyframes lmFade{from{opacity:0}to{opacity:1}}
+@keyframes lmMark5{0%,14%{left:6%}20%,34%{left:28%}40%,54%{left:50%}60%,74%{left:72%}80%,94%{left:94%}100%{left:6%}}
+@keyframes lmScrub5{0%,14%{transform:translateY(0)}20%,34%{transform:translateY(calc(-1*var(--fh)))}40%,54%{transform:translateY(calc(-2*var(--fh)))}60%,74%{transform:translateY(calc(-3*var(--fh)))}80%,94%{transform:translateY(calc(-4*var(--fh)))}100%{transform:translateY(0)}}
+@keyframes lmScrub4{0%,18%{transform:translateY(0)}25%,43%{transform:translateY(calc(-1*var(--fh)))}50%,68%{transform:translateY(calc(-2*var(--fh)))}75%,93%{transform:translateY(calc(-3*var(--fh)))}100%{transform:translateY(0)}}
+@keyframes lmScrub3{0%,22%{transform:translateY(0)}33%,55%{transform:translateY(calc(-1*var(--fh)))}66%,92%{transform:translateY(calc(-2*var(--fh)))}100%{transform:translateY(0)}}
+@keyframes lmScrub2{0%,42%{transform:translateY(0)}50%,92%{transform:translateY(calc(-1*var(--fh)))}100%{transform:translateY(0)}}
+@keyframes lmBoost{0%,77%{opacity:0}80%,93%{opacity:1}97%,100%{opacity:0}}
+@keyframes lmBlast{0%,78%{transform:scale(.04);opacity:0}80%{opacity:1;transform:scale(.5)}84%{opacity:.5}93%{opacity:0;transform:scale(3.2)}100%{opacity:0;transform:scale(.04)}}
+@keyframes lmScorch{0%,78%{background:#21201e}81%{background:#4a3a22}86%{background:#302820}94%,100%{background:#21201e}}
+@keyframes lmQuake{0%,79%{transform:none}80.5%{transform:translate(-6px,4px)}82%{transform:translate(6px,-4px)}83.5%{transform:translate(-4px,-2px)}85%{transform:translate(4px,3px)}87%{transform:translate(-3px,2px)}89%{transform:translate(3px,-2px)}91%,100%{transform:none}}
+@keyframes lmEmber{0%,79%{opacity:0;transform:translate(0,0)}82%{opacity:1}93%{opacity:0;transform:translate(-380px,var(--dy,-12px))}100%{opacity:0;transform:translate(0,0)}}
+@keyframes lmThrust{0%,78%{transform:none}82%{transform:translate(2px,-2px) scale(1.3)}86%{transform:translate(-2px,2px) scale(1.15)}90%{transform:translate(2px,-2px) scale(1.34)}94%,100%{transform:none}}
+@keyframes lmSmarterHot{0%,78%{color:#958d84}82%,93%{color:#cf9a4c}97%,100%{color:#958d84}}
+@keyframes lmBarLoop{0%{width:0}26%,90%{width:var(--w)}100%{width:0}}
+@keyframes lmRowScrub{0%,20%{transform:translateY(0)}28%,48%{transform:translateY(34px)}56%,76%{transform:translateY(68px)}84%,100%{transform:translateY(34px)}}
+@keyframes lmTypeLoop{0%{width:0}14%,90%{width:100%}100%{width:0}}
+</style>
+</helmet>
+
+<x-import component-from-global-scope="deck-stage" from="./deck-stage.js" width="1920" height="1080" hint-size="100%,100%">
+
+<section data-label="Cover" data-screen-label="01" data-speaker-notes="Loom's terminal layer, drawn ahead of the code. WP-8.1, 8.2 and 8.3 get built from this." style="box-sizing:border-box;padding:120px 130px;background:#191817;color:#e8e4dc;font-family:var(--font-body);display:flex;flex-direction:column;justify-content:space-between">
+<div style="display:flex;align-items:baseline;gap:22px;font-family:var(--mono);font-size:21px;letter-spacing:.16em;text-transform:uppercase;color:#cf9a4c">
+<span>Loom</span><span style="color:#605a53">·</span><span>WP-8.1 / 8.2 / 8.3</span><span style="color:#605a53">·</span><span>SRS §3, §4.1–4.5</span>
+</div>
+<div>
+<div style="font-family:var(--mono);font-size:30px;line-height:32px;color:#e8e4dc">
+<div style="white-space:pre;animation:lmWeaveRow 5.4s ease-out infinite">██      ██████  ██████  ██   ██</div>
+<div style="white-space:pre;animation:lmWeaveRow 5.4s ease-out infinite .13s">██      ██  ██  ██  ██  ███ ███</div>
+<div style="white-space:pre;animation:lmWeaveRow 5.4s ease-out infinite .26s">██      ██  ██  ██  ██  ███████</div>
+<div style="white-space:pre;animation:lmWeaveRow 5.4s ease-out infinite .39s">██      ██  ██  ██  ██  ██ █ ██</div>
+<div style="white-space:pre;animation:lmWeaveRow 5.4s ease-out infinite .52s">██████  ██████  ██████  ██   ██</div>
+</div>
+<h1 style="font-family:var(--font-heading);font-weight:300;font-size:132px;line-height:1;letter-spacing:-.02em;margin:52px 0 0">The terminal interface</h1>
+<p style="font-family:var(--font-heading);font-weight:300;font-size:44px;line-height:1.3;margin:26px 0 0;max-width:24em;color:#958d84">Ten moments, storyboarded and played. Plus a logo, a glyph kit, and the theme as data.</p>
+</div>
+<div style="display:flex;align-items:center;gap:20px;font-family:var(--mono);font-size:20px;color:#605a53">
+<span style="color:#cf9a4c">❯</span><span>96 cols · one dark theme · plain ASCII fallback · copy verbatim from the SRS</span>
+</div>
+</section>
+
+<section data-label="Where this starts" data-screen-label="02" data-speaker-notes="loom/tui/ does not exist yet. Everything here is drawing ahead of code, not a recreation." style="box-sizing:border-box;padding:100px 130px;background:#f3f2f2;color:#201f1d;font-family:var(--font-body);display:flex;flex-direction:column">
+<div style="font-family:var(--mono);font-size:20px;letter-spacing:.16em;color:#7d5411">§ 00</div>
+<h2 style="font-family:var(--font-heading);font-weight:400;font-size:82px;line-height:1.05;margin:16px 0 0">Where this starts</h2>
+<hr class="hr" style="margin:44px 0 40px">
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:74px;font-size:29px;line-height:1.62;text-align:justify;hyphens:auto;text-wrap:pretty">
+<div>
+<p style="margin:0 0 26px"><code style="font-family:var(--mono);font-size:26px;background:rgba(207,154,76,.15);padding:2px 8px;border-radius:3px">loom/tui/</code> does not exist yet. WP-1.1 through 1.5 have landed — contracts, the event log, config precedence, the ledger, <code style="font-family:var(--mono);font-size:26px">init</code> and <code style="font-family:var(--mono);font-size:26px">status</code>. Everything here sits in front of code still to be written.</p>
+<p style="margin:0">So none of it is a recreation. It is the drawing that WP-8.1, 8.2 and 8.3 get built from.</p>
+</div>
+<div>
+<p style="margin:0 0 26px">Three things are treated as fixed: the banner block in SRS §3.2, the effort slider in §3.4, and the field order <code style="font-family:var(--mono);font-size:26px">loom status</code> already prints from <code style="font-family:var(--mono);font-size:26px">cli.py</code>.</p>
+<p style="margin:0">The parity matrix in §3.1 is the brief. Behaviour parity, drawn in Loom's own hand — a warm charcoal ground, gold as stroke, and a weave for a mark.</p>
+</div>
+</div>
+</section>
+
+<section data-label="Parameters" data-screen-label="03" data-speaker-notes="The four decisions everything else is drawn against." style="box-sizing:border-box;padding:100px 130px;background:#f3f2f2;color:#201f1d;font-family:var(--font-body);display:flex;flex-direction:column;justify-content:center">
+<div style="font-family:var(--mono);font-size:20px;letter-spacing:.16em;color:#7d5411">PARAMETERS</div>
+<h2 style="font-family:var(--font-heading);font-weight:400;font-size:82px;line-height:1.05;margin:16px 0 60px">Drawn against four numbers</h2>
+<div style="display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid rgba(32,31,29,.16);border-bottom:1px solid rgba(32,31,29,.16)">
+<div style="padding:44px 44px 48px 0"><div style="font-family:var(--mono);font-size:19px;letter-spacing:.14em;text-transform:uppercase;color:rgba(32,31,29,.48)">Width</div><div style="font-family:var(--font-heading);font-size:62px;margin-top:14px">96 cols</div></div>
+<div style="padding:44px;border-left:1px solid rgba(32,31,29,.16)"><div style="font-family:var(--mono);font-size:19px;letter-spacing:.14em;text-transform:uppercase;color:rgba(32,31,29,.48)">Theme</div><div style="font-family:var(--font-heading);font-size:62px;margin-top:14px">One dark</div></div>
+<div style="padding:44px;border-left:1px solid rgba(32,31,29,.16)"><div style="font-family:var(--mono);font-size:19px;letter-spacing:.14em;text-transform:uppercase;color:rgba(32,31,29,.48)">Fallback</div><div style="font-family:var(--font-heading);font-size:62px;margin-top:14px">ASCII</div></div>
+<div style="padding:44px;border-left:1px solid rgba(32,31,29,.16)"><div style="font-family:var(--mono);font-size:19px;letter-spacing:.14em;text-transform:uppercase;color:rgba(32,31,29,.48)">Copy</div><div style="font-family:var(--font-heading);font-size:62px;margin-top:14px">Verbatim</div></div>
+</div>
+<p style="margin:54px 0 0;font-size:29px;line-height:1.6;max-width:44em;color:rgba(32,31,29,.66)">Anything that moves also has a still, because <code style="font-family:var(--mono);font-size:26px">FR-ANIM-04</code> says motion may never change an outcome — only the rendering.</p>
+</section>
+
+<section data-label="Divider — Identity" data-screen-label="04" data-speaker-notes="Part one: the mark and the wordmark." style="box-sizing:border-box;padding:120px 130px;background:#191817;color:#e8e4dc;font-family:var(--font-body);display:flex;flex-direction:column;justify-content:center;position:relative;overflow:hidden">
+<div style="position:absolute;right:90px;bottom:-120px;font-family:var(--font-heading);font-weight:300;font-size:460px;line-height:.8;color:rgba(207,154,76,.13);font-feature-settings:'tnum'">I</div>
+<div style="position:relative">
+<div style="font-family:var(--mono);font-size:21px;letter-spacing:.16em;text-transform:uppercase;color:#cf9a4c">Part one</div>
+<h2 style="font-family:var(--font-heading);font-weight:300;font-size:126px;line-height:1.02;margin:24px 0 0">Identity</h2>
+<p style="font-size:31px;line-height:1.55;margin:32px 0 0;max-width:26em;color:#958d84">A weave is the only thing a loom makes — and a weave is already how weaving is notated.</p>
+</div>
+</section>
+
+<section data-label="The mark" data-screen-label="05" data-speaker-notes="Three candidates. 1b's shuttle is the same glyph the selection widgets already need, so logo and cursor become one object." style="box-sizing:border-box;padding:88px 110px;background:#f3f2f2;color:#201f1d;font-family:var(--font-body);display:flex;flex-direction:column">
+<div style="display:flex;align-items:baseline;gap:26px">
+<div style="font-family:var(--mono);font-size:20px;letter-spacing:.16em;color:#7d5411">§ 01</div>
+<h2 style="font-family:var(--font-heading);font-weight:400;font-size:66px;line-height:1;margin:0">The mark</h2>
+<p style="margin:0;font-size:26px;color:rgba(32,31,29,.6)">Three candidates, each surviving at three lines, five rows, vector, and one character.</p>
+</div>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:44px;margin-top:56px">
+
+<div>
+<div style="display:flex;align-items:baseline;gap:14px;margin-bottom:18px"><span style="font-family:var(--mono);font-weight:500;font-size:19px;padding:4px 11px;background:rgba(32,31,29,.08);border-radius:4px">1a</span><span style="font-size:24px;color:rgba(32,31,29,.58)">Warp + weft</span></div>
+<div style="background:#21201e;border:10px solid #eae9e9;outline:1px solid rgba(32,31,29,.16);padding:34px 36px;font-family:var(--mono);color:#e8e4dc">
+<div style="font-size:30px;line-height:33px"><div style="white-space:pre;color:#cf9a4c">▀▄▀▄▀</div><div style="white-space:pre;color:#958d84">▄▀▄▀▄</div><div style="white-space:pre;color:#cf9a4c">▀▄▀▄▀</div></div>
+<div style="height:1px;background:#3a3733;margin:32px 0"></div>
+<div style="font-size:18px;line-height:20px"><div style="white-space:pre;color:#cf9a4c">██      ██████  ██████  ██   ██</div><div style="white-space:pre;color:#958d84">██      ██  ██  ██  ██  ███ ███</div><div style="white-space:pre;color:#cf9a4c">██      ██  ██  ██  ██  ███████</div><div style="white-space:pre;color:#958d84">██      ██  ██  ██  ██  ██ █ ██</div><div style="white-space:pre;color:#cf9a4c">██████  ██████  ██████  ██   ██</div></div>
+<div style="height:1px;background:#3a3733;margin:32px 0"></div>
+<div style="display:flex;align-items:center;gap:30px">
+<svg width="62" height="62" viewBox="0 0 32 32" fill="none" stroke="#cf9a4c" stroke-width="1.6"><path d="M8 2v28M16 2v28M24 2v28"/><path d="M2 8h4M10 8h4M18 8h4M26 8h4M2 16h4M10 16h4M18 16h4M26 16h4M2 24h4M10 24h4M18 24h4M26 24h4" stroke="#e8e4dc"/></svg>
+<div style="font-size:44px;color:#cf9a4c;line-height:1">▚</div>
+</div>
+</div>
+<p style="font-size:24px;line-height:1.55;margin:20px 0 0;color:rgba(32,31,29,.6)">Gold is warp, grey is weft. Reads as cloth at every size.</p>
+</div>
+
+<div>
+<div style="display:flex;align-items:baseline;gap:14px;margin-bottom:18px"><span style="font-family:var(--mono);font-weight:500;font-size:19px;padding:4px 11px;background:#b68235;color:#f3f2f2;border-radius:4px">1b</span><span style="font-size:24px;color:rgba(32,31,29,.58)">Shuttle</span></div>
+<div style="background:#21201e;border:10px solid #eae9e9;outline:1px solid rgba(32,31,29,.16);padding:34px 36px;font-family:var(--mono);color:#e8e4dc">
+<div style="font-size:30px;line-height:33px"><div style="white-space:pre;color:#605a53">┆┆┆┆┆</div><div style="white-space:pre;color:#cf9a4c">━━❯━━</div><div style="white-space:pre;color:#605a53">┆┆┆┆┆</div></div>
+<div style="height:1px;background:#3a3733;margin:32px 0"></div>
+<div style="display:flex;align-items:center;gap:18px">
+<span style="font-size:42px;color:#cf9a4c">❯</span>
+<div style="font-size:18px;line-height:20px;white-space:pre">██      ██████  ██████  ██   ██
+██      ██  ██  ██  ██  ███ ███
+██      ██  ██  ██  ██  ███████
+██      ██  ██  ██  ██  ██ █ ██
+██████  ██████  ██████  ██   ██</div>
+</div>
+<div style="height:1px;background:#3a3733;margin:32px 0"></div>
+<div style="display:flex;align-items:center;gap:30px">
+<svg width="62" height="62" viewBox="0 0 32 32" fill="none" stroke-width="1.6"><path d="M5 3v26M11 3v26M21 3v26M27 3v26" stroke="#605a53"/><path d="M2 16h28" stroke="#cf9a4c"/><path d="M13 10l6 6-6 6" stroke="#cf9a4c" stroke-linecap="round" stroke-linejoin="round" fill="#21201e"/></svg>
+<div style="font-size:44px;color:#cf9a4c;line-height:1">❯</div>
+</div>
+</div>
+<p style="font-size:24px;line-height:1.55;margin:20px 0 0;color:rgba(32,31,29,.6)">One glyph does logo, prompt and list selection. Every frame from here on uses it.</p>
+</div>
+
+<div>
+<div style="display:flex;align-items:baseline;gap:14px;margin-bottom:18px"><span style="font-family:var(--mono);font-weight:500;font-size:19px;padding:4px 11px;background:rgba(32,31,29,.08);border-radius:4px">1c</span><span style="font-size:24px;color:rgba(32,31,29,.58)">Heddle grid</span></div>
+<div style="background:#21201e;border:10px solid #eae9e9;outline:1px solid rgba(32,31,29,.16);padding:34px 36px;font-family:var(--mono);color:#e8e4dc">
+<div style="font-size:30px;line-height:33px"><div style="white-space:pre;color:#cf9a4c">┌┬┬┬┐</div><div style="white-space:pre;color:#958d84">│││││</div><div style="white-space:pre;color:#605a53">└┴┴┴┘</div></div>
+<div style="height:1px;background:#3a3733;margin:32px 0"></div>
+<div style="position:relative;padding:8px 0">
+<div style="position:absolute;inset:0;background:repeating-linear-gradient(90deg,#3a3733 0 1px,transparent 1px 18px)"></div>
+<div style="position:relative;font-size:18px;line-height:20px;white-space:pre">██      ██████  ██████  ██   ██
+██      ██  ██  ██  ██  ███ ███
+██      ██  ██  ██  ██  ███████
+██      ██  ██  ██  ██  ██ █ ██
+██████  ██████  ██████  ██   ██</div>
+</div>
+<div style="height:1px;background:#3a3733;margin:32px 0"></div>
+<div style="display:flex;align-items:center;gap:30px">
+<svg width="62" height="62" viewBox="0 0 32 32" fill="none" stroke-width="1.6"><rect x="3" y="4" width="26" height="24" stroke="#605a53"/><path d="M3 8h26" stroke="#cf9a4c" stroke-width="2.4"/><path d="M9 8v20M16 8v20M23 8v20" stroke="#e8e4dc"/></svg>
+<div style="font-size:44px;color:#cf9a4c;line-height:1">▤</div>
+</div>
+</div>
+<p style="font-size:24px;line-height:1.55;margin:20px 0 0;color:rgba(32,31,29,.6)">The only one that reads as a container — useful if the mark must hold a number.</p>
+</div>
+
+</div>
+</section>
+
+</x-import>
+
+</x-dc>
+</body>
+</html>

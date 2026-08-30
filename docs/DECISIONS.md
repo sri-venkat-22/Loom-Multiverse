@@ -60,3 +60,26 @@ One line per non-obvious choice, appended by whoever made it.
   would only cover the modules that already import cleanly.
 - `tests/conftest.py` blocks outbound sockets for every test except `@pytest.mark.live` (NFR-TEST-02).
   Listening and local IPC are untouched; only `connect` is refused.
+
+## Terminal design bundle (2026-08-30)
+
+- `design/terminal/` is a point-in-time export of the Claude Design canvas, committed rather than
+  linked. A URL is not readable from a session with no network, and the 8.x work packages are months
+  out — the canvas may have moved on or away by then. The canvas stays the live source; the export
+  is what the repo builds from, and re-exporting is how it gets updated.
+- The bundle resolves SRS assumption A-1. The palette, glyph kit, spinner sets, gradient stops and
+  `.loom/theme.toml` schema are now decided data, not a placeholder.
+- Its numbers were checked against landed code before filing: the effort slider's five rows match
+  `EFFORT_PRESETS` exactly, the tier switch falls between `high` and `xhigh` as `MODEL_TIERS` has it,
+  the banner and slider both show `medium` as the default effort, `/cost` ledgers judge spend
+  separately, and budget exhaustion exits 3. Nothing in Phase 1 needed changing.
+- Two spec conflicts the drawing found, both still open: SRS §3.3 lists `/demo` while the §5.2
+  catalogue registers `/preview` (one is a typo — the registry should win, FR-SLASH-05), and the §3.2
+  banner mock has no line for the credential source that FR-CLI-03 makes mandatory. The drawing adds
+  one; the SRS mock should be amended to match before WP-8.1.
+- The mark is undecided. Everything from §03 on is drawn with candidate 1b (the shuttle `❯`, which
+  doubles as the prompt and the selection cursor); 1a (plain weave) and 1c (heddle grid) are drawn
+  but not applied. WP-8.1 needs this answered before the banner is built.
+- WP-8.2's `/model` picker needs a model catalogue (name, blurb, price, tier) that `loom/config.py`
+  does not have — today there is `MODEL_TIERS` (two entries) and `DEFAULT_PRICE_TABLE` (three). The
+  drawing lists four, including `ollama/qwen2.5-coder`. Deferred to 8.2 rather than guessed at now.
