@@ -15,7 +15,7 @@ from loom.security import CommandDenied
 
 @pytest.fixture
 def registry(tmp_path: Path) -> ToolRegistry:
-    return ToolRegistry([bash_tool(tmp_path, timeout=5.0)])
+    return ToolRegistry([bash_tool(tmp_path, timeout=3.0)])
 
 
 async def test_a_command_runs_in_the_workspace_and_reports_its_exit_code(
@@ -58,11 +58,11 @@ async def test_a_slow_command_times_out_and_leaves_no_orphan(
     started = time.monotonic()
     out = await registry.execute(
         "run_bash",
-        {"command": "sleep 30 & echo $! > child.pid; sleep 10", "timeout": 2},
+        {"command": "sleep 30 & echo $! > child.pid; sleep 10", "timeout": 1},
     )
     elapsed = time.monotonic() - started
 
-    assert "timed out" in out and "2" in out
+    assert "timed out" in out and "1s" in out
     assert elapsed < 8, f"the timeout did not fire: {elapsed:.1f}s"
 
     child = int((tmp_path / "child.pid").read_text().strip())
@@ -73,7 +73,7 @@ async def test_a_slow_command_times_out_and_leaves_no_orphan(
 
 async def test_the_per_call_timeout_cannot_exceed_the_tool_ceiling(tmp_path: Path) -> None:
     """A model that asks for a 3600s timeout does not get one."""
-    registry = ToolRegistry([bash_tool(tmp_path, timeout=2.0)])
+    registry = ToolRegistry([bash_tool(tmp_path, timeout=0.5)])
     started = time.monotonic()
     out = await registry.execute("run_bash", {"command": "sleep 20", "timeout": 600})
     assert "timed out" in out

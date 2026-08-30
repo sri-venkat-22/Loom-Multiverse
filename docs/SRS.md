@@ -43,6 +43,7 @@
 | 2.7a | litellm adapter | ✅ landed |
 | 2.8 | `ask_user` | ✅ landed |
 | 2.9 | Cassette recorder/replayer | ✅ landed (fixtures hand-written until `make cassettes` runs) |
+| 4.1 | Workspace git wrapper | ✅ landed |
 | everything else | — | not started |
 
 ---
@@ -1397,7 +1398,7 @@ passwords hashed with argon2id; rate limits on all auth endpoints; only the usag
 | `FR-GATE-01…04/06` | 3.5 | todo |
 | `FR-PIPE-01…04`, `FR-HEADLESS-01/04` | 3.6 | todo |
 | `FR-SESS-05` | 3.7 | todo |
-| `FR-WS-01/02/03`, `SEC-08` | 4.1 | todo |
+| `FR-WS-01/02/03`, `SEC-08` | 4.1 | ✅ landed |
 | `FR-RUB-01…09` | 4.2 | todo |
 | `FR-BUILD-06` | 4.3 | todo |
 | `FR-BUILD-01…05`, `FR-ART-04` | 4.4 | todo |

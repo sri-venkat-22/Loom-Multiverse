@@ -144,3 +144,35 @@ One line per non-obvious choice, appended by whoever made it.
 - No `prompt_fn` behaves identically to `--yes`. A piped run has no terminal to ask through;
   that is a default, not an error, and it is what keeps FR-HEADLESS from needing a second code
   path.
+
+## WP-4.1 — workspace (2026-08-31)
+
+- Snapshots are real commits, not `refs/` trees written with `commit-tree`. "Squash the turn
+  commits on phase success" presupposes turn commits, and the generated app lives in git anyway
+  (SRS §5.3).
+- `reset_to` is `reset --hard` **plus** `clean -fd`. `reset --hard` alone leaves untracked files
+  behind, so turn 6's half-written module would survive into turn 3 — "the exact tree" minus the
+  part everybody forgets. `-x` is deliberately absent so ignored files (virtualenvs) survive.
+- `.loom/` is excluded from `add`, `status`, `write-tree` and `clean` by pathspec, not by
+  trusting the `.gitignore` FR-WS-04 writes. Two failures if it were not: snapshots would commit
+  the event log and `reset_to` would roll back the log of the run doing the resetting, and a
+  growing `events.jsonl` would change `tree_hash()` on every write, busting WP-4.2's memo on
+  every grading round.
+- Every constructor plants an empty baseline commit. A repo with no commits makes `head()`,
+  `reset --soft` and `merge-base` each a special case; one commit removes all of them.
+- Snapshot labels are validated against `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` before reaching git,
+  because they become ref names and `refs/loom/snap/../../heads/main` is a sentence git parses.
+- Phase bases are refs (`refs/loom/base/<phase>`), not memory, so a resumed process can still
+  squash the phase it interrupted.
+- `commit_phase` refuses unless the base is an ancestor of HEAD (FR-WS-03). A soft reset to a
+  base HEAD no longer descends from would silently delete everything in between.
+- Loom commits as `Loom <loom@localhost>` via `-c`, never writing to the user's git config.
+  These are machine snapshots; attributing generated code to whoever was logged in is a small
+  lie that stays in `git blame`.
+- `Workspace` is synchronous. git is fast, snapshots are once per turn, and an async wrapper
+  around four `subprocess.run` calls buys nothing.
+- Turn refs are left in place after a squash: those commits leave the branch history but stay
+  reachable, so `reset_to("turn-3")` still works afterwards.
+- The two bash timeout tests were cut from 2s to 1s and 0.5s. Nothing is proved by waiting two
+  seconds that is not proved by half of one, and the git-backed workspace tests had pushed the
+  unit tier to 14.7s against NFR-TEST-01's 10s ceiling. Now 9.0s.
