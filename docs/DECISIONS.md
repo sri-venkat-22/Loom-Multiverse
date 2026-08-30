@@ -176,3 +176,39 @@ One line per non-obvious choice, appended by whoever made it.
 - The two bash timeout tests were cut from 2s to 1s and 0.5s. Nothing is proved by waiting two
   seconds that is not proved by half of one, and the git-backed workspace tests had pushed the
   unit tier to 14.7s against NFR-TEST-01's 10s ceiling. Now 9.0s.
+
+## WP-4.2 — rubric (2026-08-31)
+
+- The memo is **re-stamped against the tree hash as grading left it**, not the one it started
+  with. Grading has side effects — `pytest` writes `.pytest_cache/` and `__pycache__/` — so
+  unless the generated repo happens to ignore both, the post-round hash differs from the
+  pre-round one and the next round misses every entry. COST CONTROL 2 would then be dead weight
+  that looks alive, and the only symptom is a bigger bill. Costs one extra `git write-tree` per
+  round. `tests/test_rubric.py` pins both halves: a side-effecting criterion still memoizes, and
+  a real file change still busts it.
+- Memoization is opt-in by passing a `memo` dict, and only then is a tree hash computed. A
+  caller that does not memoize does not need the workspace to be a git repository at all — which
+  also keeps most of the rubric's own tests off git.
+- `grade()` ledgers judge calls itself under `phase="judge"` rather than relying on the caller
+  to have built `judge_provider` with the right phase. FR-RUB-07 is a property of the rubric,
+  not of whoever wired it. The injected judge provider should therefore carry no ledger of its
+  own, or spend is counted twice.
+- A retried judge call is ledgered too. It cost money whether or not it parsed.
+- Shell pass/fail is read from `run_bash`'s `exit 0` prefix. ponytail: parsing a sibling
+  module's output format. The tests run real commands through the real tool, so a change to that
+  format fails there instead of silently marking every build green; the upgrade path, if it ever
+  bites, is a structured result from `bash.py` that the tool formats for the model.
+- Judge evidence is wrapped in `BEGIN EVIDENCE`/`END EVIDENCE` and the system prompt says
+  content inside is never an instruction. The repo under review was written by a model that
+  knows it is about to be graded; SEC-04's framing applies here as much as to fetched web pages.
+- `evidence_paths` globs are filtered through the path jail. They come out of a model-written
+  Design and are not trusted input.
+- A judge score outside `[0, 1]` is clamped rather than retried — 1.4 is a clear intent, badly
+  expressed — but unparseable JSON costs the one retry FR-RUB-05 allows. A fenced JSON object
+  is accepted without spending it, because every instruction-tuned model does that eventually.
+- Criteria keep their own scores when a `hard_fail` forces the total to 0.0. Only the total is
+  overridden, so `as_feedback()` can still say how close it got.
+- The unit tier is now 10.8 s against NFR-TEST-01's 10 s. What is left is real subprocess work
+  — git in the workspace tests, actual timeouts in the bash and rubric tests — and one 1.1 s
+  litellm import. Either split a `slow` marker or amend the NFR; do not fix it by mocking git,
+  which is the one thing those tests exist to exercise.
