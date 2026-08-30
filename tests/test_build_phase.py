@@ -19,6 +19,11 @@ from loom.phases.build import PROMPT, BuildResult, RubricGrader, run_build
 from loom.testing.fake_llm import FakeLLM
 from loom.workspace import Workspace
 
+#: NFR-TEST-01 — every test here drives a real git repository, so the file costs
+#: seconds rather than milliseconds. `pytest -m "not slow"` is the on-save tier;
+#: plain `pytest` still runs all of it.
+pytestmark = pytest.mark.slow
+
 SLUGIFY = '''def slugify(text: str) -> str:
     """Turn text into a url-safe slug."""
     kept = [c if c.isalnum() else "-" for c in text.lower().strip()]

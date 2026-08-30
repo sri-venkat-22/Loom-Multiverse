@@ -30,8 +30,10 @@ packages = ["loom"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-m 'not live'"
-markers = ["live: hits real provider APIs, costs money"]
+markers = [
+    "live: hits real provider APIs, costs money. Skipped unless `-m live` (see tests/conftest.py)",
+    "slow: real git repositories and full build loops. Excluded from the on-every-save tier",
+]
 
 [tool.ruff]
 line-length = 100

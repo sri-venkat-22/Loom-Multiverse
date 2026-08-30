@@ -14,6 +14,11 @@ import pytest
 
 from loom.workspace import DirtyWorkspace, Workspace, WorkspaceError
 
+#: NFR-TEST-01 — every test here drives a real git repository, so the file costs
+#: seconds rather than milliseconds. `pytest -m "not slow"` is the on-save tier;
+#: plain `pytest` still runs all of it.
+pytestmark = pytest.mark.slow
+
 
 def git(root: Path, *args: str) -> str:
     result = subprocess.run(

@@ -246,3 +246,20 @@ One line per non-obvious choice, appended by whoever made it.
 - The unit tier is now **21 s** against NFR-TEST-01's 10 s, and `test_build_phase.py` is half of
   it. The cost is real git and real subprocesses, which is exactly what those tests exist to
   exercise — the fix is a selector, not a mock. See the note in the WP-4.2 section.
+
+## Test tiers — the `slow` marker (2026-08-31)
+
+- `slow` marks tests that drive a real git repository or a full build loop:
+  `test_workspace.py` and `test_build_phase.py`, 50 tests and about 15 of the suite's 21
+  seconds. `make fast` (`-m "not slow"`) is the on-every-save tier at 6.4 s; plain
+  `uv run pytest -q` still runs everything and stays the CI gate. NFR-TEST-01 was amended to
+  say so, since the 10 s budget now belongs to the fast tier rather than to the whole suite.
+- The line is "does it need a real repo or a real build loop", not "is it slow". `test_bash_tool`
+  and `test_scaffold` also spawn subprocesses, but a subprocess *is* the unit under test there,
+  and together they cost under 3 s.
+- **`addopts = "-m 'not live'"` was removed and replaced with a `pytest_collection_modifyitems`
+  hook.** A command-line `-m` overrides addopts entirely — last one wins — so `pytest -m "not
+  slow"`, the exact command this change exists to enable, would have collected the live tests
+  and spent real money. Verified before the change: `pytest -m "not slow"` collected 360 tests
+  including the live recorder. Skipping `live` by keyword unless the `-m` expression names it
+  makes every marker expression composable and safe.

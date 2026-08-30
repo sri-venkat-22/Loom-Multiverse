@@ -1302,9 +1302,13 @@ import-guard test.
 
 ### 7.9 Testability
 
-**NFR-TEST-01 · MUST** — Three tiers: **unit** (FakeLLM, no network, < 10 s), **cassette** (recorded
+**NFR-TEST-01 · MUST** — Three tiers: **unit** (FakeLLM, no network), **cassette** (recorded
 provider responses, deterministic, free, in CI), **live** (`-m live`, real money, manual/nightly).
-`uv run pytest -q` runs unit + cassette.
+`uv run pytest -q` runs unit + cassette; the `live` tier is skipped unless the `-m` expression
+names it, so no other marker expression can spend money by accident.
+Within unit + cassette, tests that drive a real git repository or a full build loop are marked
+`slow`. **`make fast` (`-m "not slow"`) is the on-every-save tier and MUST stay under 10 s**; the
+full run is the CI gate and has no time budget. *Verify:* `make fast` timing.
 **NFR-TEST-02 · MUST** — No unit test touches the network. *Verify:* a socket-blocking autouse fixture.
 **NFR-TEST-03 · MUST** — Every requirement in §4 marked MUST has at least one automated test or an
 explicit "manual" verification note.
@@ -1383,7 +1387,7 @@ passwords hashed with argon2id; rate limits on all auth endpoints; only the usag
 | `FR-DES-02`, data model | 1.1 | ✅ landed |
 | `FR-SESS-01/02`, `NFR-REL-02` | 1.2 | ✅ landed |
 | `FR-CFG-01/02`, `FR-COST-01` | 1.3 | ✅ landed |
-| `NFR-TEST-01` (unit tier) | 1.4 | ✅ landed |
+| `NFR-TEST-01` (unit tier) | 1.4, 4.4 | ✅ landed |
 | `FR-CLI-04`, `FR-DIAG-01`, `FR-WS-04` | 1.5 | ✅ landed |
 | `FR-TOOL-01` | 2.1 | ✅ landed |
 | `FR-TOOL-02/03/04/07` | 2.2 | ✅ landed |

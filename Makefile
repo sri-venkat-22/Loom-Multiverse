@@ -1,9 +1,13 @@
-.PHONY: check test lint types cassettes
+.PHONY: check test fast lint types cassettes
 
 check: lint types test
 
 test:
 	uv run pytest -q
+
+# The on-every-save tier: no real git, no full build loops. Under 10s (NFR-TEST-01).
+fast:
+	uv run pytest -q -m "not slow"
 
 lint:
 	uv run ruff check . && uv run ruff format --check .
