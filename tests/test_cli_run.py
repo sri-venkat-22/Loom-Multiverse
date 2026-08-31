@@ -82,6 +82,31 @@ def test_stdin_being_closed_changes_nothing(project: Path, model: FakeLLM) -> No
     assert result.exit_code == cli.ExitCode.OK
 
 
+# --------------------------------------------------------------------------- FR-HEADLESS-02/03
+
+
+def test_piped_output_is_plain_lines_with_no_escape_byte(project: Path, model: FakeLLM) -> None:
+    """FR-HEADLESS-02 — CliRunner's stdout is not a TTY, so the per-turn line renderer is live.
+    One readable line per turn, and not a single ESC byte in the whole stream."""
+    result = run("run", "a url shortener", "-C", str(project), "--to", "design", "--yes")
+    assert result.exit_code == cli.ExitCode.OK
+    assert "\x1b" not in result.stdout
+    turn_lines = [ln for ln in result.stdout.splitlines() if " turn " in ln and "$" in ln]
+    assert len(turn_lines) == 3  # one per phase, each phase answering in a single turn
+
+
+def test_json_flag_emits_only_parsable_json(project: Path, model: FakeLLM) -> None:
+    """FR-HEADLESS-03 — every stdout line parses, and the human report is gone."""
+    result = run("run", "a url shortener", "-C", str(project), "--to", "design", "--yes", "--json")
+    assert result.exit_code == cli.ExitCode.OK
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    assert lines, "expected a JSON event stream on stdout"
+    # Every line parsing is also proof the human `_report` block is gone — its lines
+    # ("run <id>: passed (...)") are not JSON and would raise here if they had leaked.
+    kinds = {json.loads(ln)["kind"] for ln in lines}
+    assert {"run_started", "turn", "run_finished"} <= kinds
+
+
 # --------------------------------------------------------------------------- FR-CLI-06
 
 

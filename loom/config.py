@@ -55,7 +55,7 @@ DEFAULT_EFFORT: Effort = "medium"
 #: which costs Loom nothing, because `phases/base.py` puts the schema in the prompt rather than
 #: asking the provider for native structured output.
 MODEL_TIERS: dict[str, str] = {
-    "cheap": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+    "cheap": "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b",
     "strong": "anthropic/claude-sonnet-5",
 }
 
@@ -76,12 +76,7 @@ DEFAULT_PRICE_TABLE: dict[str, Price] = {
     # Listed at zero on purpose rather than left out. An absent model and a free one both cost
     # $0.00 through `_fallback_cost`, but only one of them is a fact — the entry is how the
     # ledger says "this is free" instead of "we have no idea what this costs".
-    "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": Price(
-        input_per_mtok=0.0, output_per_mtok=0.0
-    ),
-    "openrouter/nvidia/nemotron-3-ultra-550b-a55b": Price(
-        input_per_mtok=0.50, output_per_mtok=2.20
-    ),
+    "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b": Price(input_per_mtok=0.0, output_per_mtok=0.0),
     "openrouter/qwen/qwen3-coder": Price(input_per_mtok=0.30, output_per_mtok=0.30),
     "openrouter/qwen/qwen3-coder-480b": Price(input_per_mtok=0.90, output_per_mtok=0.90),
     "anthropic/claude-sonnet-5": Price(input_per_mtok=3.00, output_per_mtok=15.00),
@@ -151,19 +146,39 @@ def credentials_path(home: Path) -> Path:
     return Path(home) / ".loom" / CREDENTIALS_NAME
 
 
+def load_dotenv(path: Path) -> dict[str, str]:
+    """Parse a `KEY=value` `.env` file. Blank lines and `#` comments are skipped, a leading
+    `export ` is tolerated, and surrounding single/double quotes on the value are stripped.
+    Missing file -> empty dict. Deliberately tiny — no interpolation, no multiline values."""
+    pairs: dict[str, str] = {}
+    if not path.exists():
+        return pairs
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.removeprefix("export ").partition("=")
+        name = name.strip()
+        value = value.strip().strip("\"'")
+        if name:
+            pairs[name] = value
+    return pairs
+
+
 def apply_credentials(
     *, home: Path | None = None, env: MutableMapping[str, str] | None = None
 ) -> list[str]:
-    """FR-CFG-06 — provider keys from `~/.loom/credentials.json` into the environment.
-
-    An existing environment variable wins: a key exported for one command should not be
-    silently replaced by a stale one in a file. Returns the names it set, for `loom doctor`.
-    Raises on a group-readable file rather than using it — `read_credentials` explains why.
+    """FR-CFG-06 — provider keys from a project `.env` and `~/.loom/credentials.json` into the
+    environment. Precedence: a variable already exported wins, then project `.env` (the easy
+    place to edit keys), then `~/.loom/credentials.json`. A key exported for one command is
+    never silently replaced by a stale one in a file. Returns the names it set, for `loom doctor`.
+    Raises on a group-readable credentials file rather than using it — `read_credentials` explains.
     """
     env = os.environ if env is None else env
     home = Path(home) if home is not None else Path.home()
     set_now = []
-    for name, value in read_credentials(credentials_path(home)).items():
+    sources = {**read_credentials(credentials_path(home)), **load_dotenv(Path.cwd() / ".env")}
+    for name, value in sources.items():
         if not env.get(name):
             env[name] = value
             set_now.append(name)

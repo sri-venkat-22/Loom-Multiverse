@@ -556,3 +556,31 @@ zero artifacts. Every one of the following was invisible until a real model met 
   states (`FR-REPL-03`, tested per row), but synchronously the REPL only rests at `idle` or
   `finished`; `gate`/`running` are reached once a phase runs in the background (WP-8.5). Wiring
   them earlier would mean a fake background — deferred honestly rather than faked.
+- **Compaction shrinks old tool output, never drops turns (WP-5.2).** `context.compact` keeps
+  every message and only summarizes the `content` of old `tool` messages, so an assistant
+  `tool_calls` entry can never lose its result (blueprint bug #4). A `[compacted]` marker doubles
+  as the idempotency latch. Dropping whole old groups is the upgrade path if that is ever too soft.
+- **Headless output taps `session.log_event` on the instance (WP-5.5).** The pipeline, phases and
+  loop all narrate through that one method, so wrapping it in `cli._run_phases` is the single hook
+  that catches every event — no new plumbing through `run_pipeline`, which owns its own `on_event`.
+- **`--json` proves suppression by construction (WP-5.5).** The mode skips `_report` and the test
+  asserts every stdout line parses; a leaked human line is not JSON and would fail that same check,
+  so there is no separate "report is gone" assertion to drift.
+- **Cheap tier moved from `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` to
+  `nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b`** — the same model straight from build.nvidia.com
+  instead of via OpenRouter. litellm's `nvidia_nim/` prefix needs `NVIDIA_NIM_API_KEY`, already
+  mapped in `providers.KEY_FOR_PREFIX`. Priced at $0.00 in the fallback table: free on
+  build.nvidia.com today, so the ledger says "free" rather than guessing. OpenRouter is no longer
+  used for the cheap tier.
+
+## WP-4.6 — full evaluation harness (2026-09-01)
+
+- **Each fixture runs independently, up to four at a time, with a $1.25 ceiling.** Its judge
+  provider writes to that fixture's ledger under `judge`, so the committed markdown report's
+  token and USD totals include grading. The report sorts fixture rows by ID for prompt-change
+  diffs; aggregate wall time is elapsed harness time rather than summed concurrent fixture time.
+- Project `.env` support: `apply_credentials` now also loads a `.env` from the cwd (tiny stdlib
+  parser, no python-dotenv dep). Precedence is exported env > `.env` > `~/.loom/credentials.json`,
+  so `.env` is the easy per-project place to edit keys without shadowing an intentionally exported
+  one. `.env` is gitignored; `.env.example` is the committed template. Keys still never live in
+  `.loom/config.toml` (FR-CFG-06 unchanged — this is a new file source, not a config field).

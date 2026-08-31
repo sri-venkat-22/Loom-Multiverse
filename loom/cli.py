@@ -42,6 +42,7 @@ from loom.session import LOOM_DIR, Session, list_runs
 from loom.tui.app import start_session
 from loom.tui.banner import BannerState
 from loom.tui.theme import DEFAULT_THEME
+from loom.ui import event_sink
 
 app = typer.Typer(add_completion=False, help="Turn an idea into a working, tested codebase.")
 
@@ -79,6 +80,7 @@ MaxTurnsOpt = typer.Option(None, "--max-turns", help="Turn cap per phase.")
 MaxUsdOpt = typer.Option(None, "--max-usd", help="USD cap per phase.")
 YesOpt = typer.Option(False, "--yes", "-y", help="Auto-approve every gate. No TTY needed.")
 NoCacheOpt = typer.Option(False, "--no-cache", help="Ignore the phase cache.")
+JsonOpt = typer.Option(False, "--json", help="Emit events as JSON Lines; no other output.")
 RunOpt = typer.Option(None, "--run", help="Which run. Default: the latest.")
 PromptOpt = typer.Option(None, "--prompt", help="Use this prompt file instead.")
 
@@ -180,8 +182,7 @@ def status(path: Path = PathOpt) -> None:
 #: `config.DEFAULT_PRICE_TABLE` is: `litellm.get_model_info` is unreliable for these
 #: openrouter/anthropic strings. A model not listed here shows no context (honest over guessed).
 _CONTEXT_TOKENS: dict[str, int] = {
-    "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": 1_000_000,
-    "openrouter/nvidia/nemotron-3-ultra-550b-a55b": 1_000_000,
+    "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b": 1_000_000,
     "openrouter/qwen/qwen3-coder": 262_144,
     "openrouter/qwen/qwen3-coder-480b": 262_144,
     "anthropic/claude-sonnet-5": 200_000,
@@ -385,6 +386,7 @@ def _run_phases(
     yes: bool,
     no_cache: bool,
     run_id: str | None = None,
+    json_out: bool = False,
 ) -> PipelineResult:
     """Everything `loom run` and the four single-phase commands share."""
     root = path.resolve()
@@ -410,6 +412,20 @@ def _run_phases(
         raise typer.Exit(ExitCode.USAGE) from exc
 
     session = Session(root, run_id)
+    # FR-HEADLESS-02/03 — render the same events `session.log_event` writes to disk. Tapping the
+    # instance's method is the one hook every event routes through: the pipeline, the phases and
+    # the loop all narrate through `session.log_event`, so wrapping it here catches them all.
+    sink = event_sink(sys.stdout, json_mode=json_out, tty=sys.stdout.isatty())
+    if sink is not None:
+        _log = session.log_event
+
+        def _log_and_render(kind: str, **fields: Any) -> dict[str, Any]:
+            event = _log(kind, **fields)
+            sink(event)
+            return event
+
+        session.log_event = _log_and_render  # type: ignore[method-assign]
+
     ledger = Ledger(ledger_path(root))
     factory, judge = _providers(config, root=root, session=session, ledger=ledger)
     unattended = config.mode == "unattended"
@@ -470,7 +486,8 @@ def _run_phases(
         typer.echo("interrupted — the run is on disk and resumable with `loom resume`")
         raise typer.Exit(ExitCode.INTERRUPTED) from None
 
-    _report(result)
+    if not json_out:  # FR-HEADLESS-03 — JSON Lines is the whole of stdout, nothing else.
+        _report(result)
     code = EXIT_FOR_STATUS.get(result.status, ExitCode.ERROR)
     if code != ExitCode.OK:
         raise typer.Exit(code)
@@ -501,6 +518,7 @@ def run(
     max_usd: float = MaxUsdOpt,
     yes: bool = YesOpt,
     no_cache: bool = NoCacheOpt,
+    json_out: bool = JsonOpt,
 ) -> None:
     """Validate, plan, design and build, with a gate between each."""
     _run_phases(
@@ -516,6 +534,7 @@ def run(
         max_usd=max_usd,
         yes=yes,
         no_cache=no_cache,
+        json_out=json_out,
     )
 
 
@@ -625,6 +644,7 @@ def build(
     max_usd: float = MaxUsdOpt,
     yes: bool = YesOpt,
     no_cache: bool = NoCacheOpt,
+    json_out: bool = JsonOpt,
 ) -> None:
     """Scaffold, write the code, and grade it until the rubric passes."""
     _continue(
@@ -639,6 +659,7 @@ def build(
         max_usd=max_usd,
         yes=yes,
         no_cache=no_cache,
+        json_out=json_out,
     )
 
 

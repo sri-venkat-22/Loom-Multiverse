@@ -1,0 +1,34 @@
+[
+  {
+    "id": "wc-clone",
+    "idea": "A CLI tool that counts words, lines, and characters in a text file (wc clone)."
+  },
+  {
+    "id": "todo-api",
+    "idea": "A REST API for a simple to-do list using FastAPI."
+  },
+  {
+    "id": "web-scraper",
+    "idea": "A web scraper that extracts quotes and authors from quotes.toscrape.com."
+  },
+  {
+    "id": "md-to-html",
+    "idea": "A CLI tool that converts markdown files to HTML."
+  },
+  {
+    "id": "pwd-gen",
+    "idea": "A secure password generator CLI with length and complexity flags."
+  },
+  {
+    "id": "unit-converter",
+    "idea": "A unit converter REST API for temperature and weight."
+  },
+  {
+    "id": "static-site-gen",
+    "idea": "A simple static site generator that builds HTML from a directory of markdown files."
+  },
+  {
+    "id": "json-validator",
+    "idea": "A JSON pretty-printer and validator CLI tool."
+  }
+]

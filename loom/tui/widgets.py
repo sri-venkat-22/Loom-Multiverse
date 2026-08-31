@@ -44,8 +44,7 @@ from loom.tui.theme import DEFAULT_THEME, Theme
 #: by the full provider string. A model with no blurb still lists, with its price alone; this is
 #: copy, not configuration, so it lives with the widget rather than in `config.py`.
 MODEL_BLURBS: dict[str, str] = {
-    "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": "free, tool-capable, 1M context — default",
-    "openrouter/nvidia/nemotron-3-ultra-550b-a55b": "paid Nemotron — no free-tier limits",
+    "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b": "free, tool-capable, 1M context — default",
     "openrouter/qwen/qwen3-coder": "cheap, good enough for most builds",
     "openrouter/qwen/qwen3-coder-480b": "larger Qwen — better on multi-file designs",
     "anthropic/claude-sonnet-5": "most capable — use when a build keeps stalling",

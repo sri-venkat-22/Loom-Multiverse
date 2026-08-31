@@ -60,7 +60,7 @@ MAX_REJECTS = 2
 #: real run spent sixteen of them on a search tool that was returning nothing. `max_turns` is
 #: sized for a build — forty turns of writing and testing code — and handing that same number
 #: to a phase that cannot write a file is how a research phase becomes the expensive one.
-SHAPE_A_TURNS = 12
+SHAPE_A_TURNS = 20
 
 Status = Literal[
     "passed", "abandoned", "budget_exhausted", "stalled", "blocked", "invalid", "no-go"

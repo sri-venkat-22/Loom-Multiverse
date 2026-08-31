@@ -1,4 +1,4 @@
-.PHONY: check test fast lint types cassettes milestone pipeline
+.PHONY: check test fast lint types cassettes milestone pipeline eval
 
 check: lint types test
 
@@ -26,3 +26,7 @@ milestone:
 # WP-4.7. The whole pipeline from an idea string. Costs more than `milestone`; same deal.
 pipeline:
 	uv run pytest -m live tests/e2e/test_pipeline_urlshortener.py -q -s
+
+# WP-4.6. Real API calls on the cheap tier; the report is written to evals/results/.
+eval:
+	uv run python -m evals.harness
