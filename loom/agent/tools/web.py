@@ -1,24 +1,29 @@
 """search_web and fetch_url — the only tools a Shape A phase gets. FR-TOOL-06, SEC-04.
 
-Read-only by construction: GET only, no request body, no credentials sent or accepted, no
-redirect to a scheme other than http/https, a byte ceiling on the response and a timeout. There
-is no code path here that writes anything anywhere.
+`fetch_url` is read-only by construction: GET only, no request body, no credentials sent or
+accepted, no redirect to a scheme other than http/https, a byte ceiling and a timeout. It writes
+nothing anywhere. `search_web` makes exactly one keyed POST, to the fixed Tavily endpoint and
+nowhere else — the API key never rides along to a URL the model or a page chose, which is the
+property that check protected in the first place.
 
 Everything that comes back is wrapped in `UNTRUSTED_OPEN`/`UNTRUSTED_CLOSE` and labelled as
-data. A page on the open web is written by someone who may have read this docstring; SEC-05 is
-the test that says so out loud, and the delimiter plus the system-prompt clause is what it
-tests.
+data. A page on the open web — or a search result — is written by someone who may have read this
+docstring; SEC-05 is the test that says so out loud, and the delimiter plus the system-prompt
+clause is what it tests.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import json
+import os
 import re
 import socket
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from functools import partial
 from html.parser import HTMLParser
 from typing import Annotated
 
@@ -58,35 +63,67 @@ USER_AGENT = "loom-cli/0.1 (+https://pypi.org/project/loom-cli)"
 
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 
-SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/?q="
+#: The one keyed endpoint search_web talks to. Hardcoded, so the API key can never be sent to a
+#: host the model or a fetched page picked. Its key is a credential and lives in the environment
+#: (or ~/.loom/credentials.json), never in config.toml — FR-CFG-06.
+TAVILY_ENDPOINT = "https://api.tavily.com/search"
+TAVILY_KEY_ENV = "TAVILY_API_KEY"
 
 #: How many search results are worth reading. Past this it is noise the phase pays for.
 MAX_RESULTS = 8
 
-#: Markers of a bot-detection interstitial rather than a results page. Loom does not attempt to
-#: get past one — it says so and moves on.
-CHALLENGE_MARKERS = ("bots use duckduckgo", "complete the following challenge", "captcha")
+#: A snippet is a snippet; Tavily's `content` can run long. Anything past this is a page, and the
+#: model has fetch_url for pages.
+MAX_SNIPPET_CHARS = 400
 
-SEARCH_UNAVAILABLE = (
-    "ERROR: web search is unavailable in this run — the search endpoint served a bot check "
-    "rather than results, and Loom does not work around those.\n\n"
+_UNAVAILABLE_TAIL = (
     "Do not call search_web again; it will keep failing. Continue with `fetch_url` on sites "
     "you already know the address of, and reason from your own knowledge. Say plainly in your "
     "output that your research was limited to what you could reach directly."
 )
 
-#: A fetcher takes a URL and returns (final_url, text). Injected so every unit test in the
-#: project keeps its promise not to touch the network.
+SEARCH_UNAVAILABLE = (
+    "ERROR: web search is unavailable in this run — the search API rejected the request.\n\n"
+    + _UNAVAILABLE_TAIL
+)
+
+SEARCH_NEEDS_KEY = (
+    "ERROR: web search needs a Tavily API key and none is set. Put it in the environment as "
+    f"{TAVILY_KEY_ENV}, or in ~/.loom/credentials.json.\n\n" + _UNAVAILABLE_TAIL
+)
+
+#: A fetcher takes a URL and returns (final_url, text). A searcher takes a query and returns
+#: (title, url, snippet) rows. Both are injected so every unit test in the project keeps its
+#: promise not to touch the network.
 Fetcher = Callable[[str], tuple[str, str]]
+Searcher = Callable[[str], list[tuple[str, str, str]]]
 
 
 class WebError(RuntimeError):
     """A refusal or a failure, phrased for the model rather than for a traceback."""
 
 
-def web_tools(*, fetcher: Fetcher | None = None, max_chars: int = MAX_PAGE_CHARS) -> list[Tool]:
-    """The two read-only tools, sharing one fetcher, one seen-set and one dead-search latch."""
+class SearchUnavailable(WebError):
+    """Search is broken in a way retrying cannot fix — a missing or rejected key. Latches the
+    tool off for the rest of the phase, the way the DuckDuckGo bot-challenge used to."""
+
+
+def web_tools(
+    *,
+    fetcher: Fetcher | None = None,
+    searcher: Searcher | None = None,
+    api_key: str | None = None,
+    max_chars: int = MAX_PAGE_CHARS,
+) -> list[Tool]:
+    """The two read-only tools, sharing one seen-set and one dead-search latch.
+
+    `searcher` is injected in tests; in a real run it defaults to Tavily, keyed from
+    `api_key` or the `TAVILY_API_KEY` environment variable. No key and no injected searcher
+    means search_web reports itself unavailable rather than pretending to work.
+    """
     get = fetcher or http_get
+    key = api_key if api_key is not None else os.environ.get(TAVILY_KEY_ENV, "")
+    search: Searcher | None = searcher or (partial(tavily_search, api_key=key) if key else None)
     # Both pieces of state are per-phase, because that is the lifetime of a `web_tools()` call.
     fetched: set[str] = set()
     dead = {"search": False}
@@ -103,18 +140,19 @@ def web_tools(*, fetcher: Fetcher | None = None, max_chars: int = MAX_PAGE_CHARS
         # "No results" this replaces cost a real run sixteen turns of fruitless searching.
         if dead["search"]:
             return SEARCH_UNAVAILABLE
+        if search is None:
+            dead["search"] = True
+            return SEARCH_NEEDS_KEY
 
-        url = SEARCH_ENDPOINT + urllib.parse.quote_plus(query)
         try:
-            _, body = get(url)
-        except WebError as exc:
-            return f"ERROR: search failed: {exc}"
-
-        if is_bot_challenge(body):
+            results = search(query)
+        except SearchUnavailable:
             dead["search"] = True
             return SEARCH_UNAVAILABLE
+        except WebError as exc:
+            # A transient failure (a timeout, a 5xx) — do not latch; the next call may work.
+            return f"ERROR: search failed: {exc}"
 
-        results = parse_results(body)
         if not results:
             return (
                 f"No results for {query!r}. If two differently-worded searches both come back "
@@ -285,49 +323,63 @@ def html_to_text(html: str) -> str:
     return _BLANK.sub("\n\n", "\n".join(line.strip() for line in text.split("\n"))).strip()
 
 
-# --------------------------------------------------------------------------- search results
-
-_RESULT_LINK = re.compile(
-    r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL
-)
-_SNIPPET = re.compile(r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>', re.DOTALL)
+# --------------------------------------------------------------------------- search, keyed
 
 
-def is_bot_challenge(html: str) -> bool:
-    """Is this an anti-bot interstitial rather than results?
+def tavily_search(
+    query: str,
+    *,
+    api_key: str,
+    timeout: float = DEFAULT_TIMEOUT,
+    max_results: int = MAX_RESULTS,
+) -> list[tuple[str, str, str]]:
+    """`(title, url, snippet)` rows from Tavily. The API key rides only to `TAVILY_ENDPOINT`.
 
-    Loom will not attempt to pass one — no rotating user agents, no headless browser, no
-    solving. The tool reports itself unavailable and the phase carries on with what it can
-    reach directly.
+    Raises `SearchUnavailable` when the key is rejected — retrying that cannot help, so the
+    caller latches search off. Any other failure is a plain `WebError` the caller reports
+    without latching.
     """
-    low = html.lower()
-    return any(marker in low for marker in CHALLENGE_MARKERS)
+    payload = json.dumps({"query": query, "max_results": max_results, "api_key": api_key}).encode(
+        "utf-8"
+    )
+    request = urllib.request.Request(  # noqa: S310 - endpoint is a fixed https constant
+        TAVILY_ENDPOINT,
+        data=payload,
+        method="POST",
+        headers={
+            "User-Agent": USER_AGENT,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise SearchUnavailable(f"Tavily rejected the API key (HTTP {exc.code})") from exc
+        raise WebError(f"Tavily returned HTTP {exc.code} {exc.reason}") from exc
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise WebError(f"could not reach Tavily: {exc}") from exc
+
+    try:
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError as exc:
+        raise WebError(f"Tavily returned invalid JSON: {exc}") from exc
+    return _tavily_rows(data, max_results)
 
 
-def parse_results(html: str) -> list[tuple[str, str, str]]:
-    """`(title, url, snippet)` from the search endpoint's HTML.
-
-    ponytail: a regex over one endpoint's markup, and an unauthenticated one at that. As of
-    2026-08-31 that endpoint serves a CAPTCHA to us, so in practice this returns nothing and
-    `is_bot_challenge` is what actually fires — the prediction in this comment's earlier
-    version came true within a day of it being written. The upgrade path is unchanged and now
-    overdue: a keyed search API named in `config.toml`.
-    """
-    snippets = [_unmarkup(s) for s in _SNIPPET.findall(html)]
+def _tavily_rows(data: object, max_results: int) -> list[tuple[str, str, str]]:
+    """Pull `(title, url, snippet)` out of Tavily's response, tolerant of missing fields."""
+    results = data.get("results", []) if isinstance(data, dict) else []
     out: list[tuple[str, str, str]] = []
-    for i, (href, title) in enumerate(_RESULT_LINK.findall(html)[:MAX_RESULTS]):
-        out.append(
-            (_unmarkup(title), _unwrap_redirect(href), snippets[i] if i < len(snippets) else "")
-        )
+    for item in results[:max_results]:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url", "")).strip()
+        if not url:
+            continue
+        title = str(item.get("title", "")).strip() or url
+        snippet = str(item.get("content", "")).strip()[:MAX_SNIPPET_CHARS]
+        out.append((title, url, snippet))
     return out
-
-
-def _unwrap_redirect(href: str) -> str:
-    """The endpoint hands back `/l/?uddg=<encoded>`; the model wants the real URL."""
-    query = urllib.parse.urlparse(href).query
-    target = urllib.parse.parse_qs(query).get("uddg")
-    return target[0] if target else href
-
-
-def _unmarkup(fragment: str) -> str:
-    return html_to_text(fragment).replace("\n", " ").strip()

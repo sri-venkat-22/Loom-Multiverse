@@ -18,12 +18,12 @@ from loom.agent.tools.web import (
     UNTRUSTED_NOTE,
     UNTRUSTED_OPEN,
     UNTRUSTED_SYSTEM_CLAUSE,
+    SearchUnavailable,
     WebError,
     _check_url,
+    _tavily_rows,
     html_to_text,
     http_get,
-    is_bot_challenge,
-    parse_results,
     web_tools,
 )
 
@@ -32,16 +32,20 @@ PAGE = """
 <body><h1>Bitly</h1><p>Short   links.</p><script>steal()</script></body></html>
 """
 
-SEARCH = """
-<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fbitly.com">Bitly</a>
-<a class="result__snippet" href="x">The <b>original</b> shortener.</a>
-<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fshort.io">Short.io</a>
-<a class="result__snippet" href="y">A newer one.</a>
-"""
+#: What an injected searcher hands back — the shape tavily_search produces, without a network.
+RESULTS = [
+    ("Bitly", "https://bitly.com", "The original shortener."),
+    ("Short.io", "https://short.io", "A newer one."),
+]
 
 
 def tools(body: str = PAGE) -> ToolRegistry:
-    return ToolRegistry(web_tools(fetcher=lambda url: (url, body)))
+    return ToolRegistry(web_tools(fetcher=lambda url: (url, body), searcher=lambda q: RESULTS))
+
+
+def search_tools(searcher: Any) -> ToolRegistry:
+    """A registry whose search_web is driven by `searcher`, offline."""
+    return ToolRegistry(web_tools(fetcher=lambda url: (url, PAGE), searcher=searcher))
 
 
 # --------------------------------------------------------------------------- SEC-04
@@ -57,7 +61,7 @@ async def test_a_fetched_page_arrives_inside_the_untrusted_delimiter() -> None:
 
 async def test_search_results_are_wrapped_too() -> None:
     """The snippets are attacker-controlled in exactly the same way the page is."""
-    out = await tools(SEARCH).execute("search_web", {"query": "url shortener"})
+    out = await tools().execute("search_web", {"query": "url shortener"})
     assert UNTRUSTED_OPEN in out and UNTRUSTED_CLOSE in out
     assert "https://bitly.com" in out and "Short.io" in out
 
@@ -142,7 +146,7 @@ async def test_a_giant_page_is_truncated() -> None:
 
 
 async def test_no_results_is_a_sentence_not_an_empty_string() -> None:
-    out = await tools("<html></html>").execute("search_web", {"query": "nothing at all"})
+    out = await search_tools(lambda q: []).execute("search_web", {"query": "nothing at all"})
     assert "No results" in out
 
 
@@ -164,15 +168,23 @@ def test_scripts_and_styles_do_not_reach_the_model() -> None:
     assert "Short links." in text  # runs of whitespace collapsed
 
 
-def test_search_parsing_unwraps_the_redirect() -> None:
-    """A `/l/?uddg=` URL is useless to the model and unfetchable by the tool."""
-    results = parse_results(SEARCH)
-    assert [url for _, url, _ in results] == ["https://bitly.com", "https://short.io"]
-    assert results[0] == ("Bitly", "https://bitly.com", "The original shortener.")
-
-
-def test_markup_the_parser_has_never_seen_yields_nothing_rather_than_garbage() -> None:
-    assert parse_results("<div>the layout changed</div>") == []
+def test_tavily_rows_tolerate_missing_and_junk_fields() -> None:
+    """Loom must not crash on a result missing a url, a title, or the whole shape it expected."""
+    data = {
+        "results": [
+            {"title": "Bitly", "url": "https://bitly.com", "content": "x"},
+            {"url": "https://no-title.example"},  # title falls back to the url
+            {"title": "no url — dropped"},  # no url: skipped entirely
+            "not even a dict",  # skipped
+        ]
+    }
+    rows = _tavily_rows(data, max_results=8)
+    assert rows == [
+        ("Bitly", "https://bitly.com", "x"),
+        ("https://no-title.example", "https://no-title.example", ""),
+    ]
+    assert _tavily_rows({}, max_results=8) == []
+    assert _tavily_rows("garbage", max_results=8) == []
 
 
 def test_html_to_text_survives_junk() -> None:
@@ -197,48 +209,67 @@ def test_urllib_errors_become_web_errors(monkeypatch: pytest.MonkeyPatch) -> Non
 
 # --------------------------------------------------------------------------- learned the hard way
 
-CHALLENGE = """<html><body><h1>DuckDuckGo</h1>
-<p>Unfortunately, bots use DuckDuckGo too.</p>
-<p>Please complete the following challenge to confirm this search was made by a human.</p>
-</body></html>"""
 
-
-def test_a_bot_challenge_is_recognised_rather_than_parsed() -> None:
-    assert is_bot_challenge(CHALLENGE)
-    assert not is_bot_challenge(SEARCH)
-
-
-async def test_search_says_it_is_unavailable_instead_of_no_results() -> None:
-    """The silent "No results" this replaces cost a real run sixteen turns: the model searched,
-    got nothing, rephrased, got nothing, and had no way to learn the tool was broken."""
-    registry = tools(CHALLENGE)
+async def test_no_key_reports_unavailable_and_names_the_env_var() -> None:
+    """No searcher and no key: search_web must say so once and point at fetch_url, not pretend."""
+    registry = ToolRegistry(web_tools(fetcher=lambda u: (u, PAGE), api_key=""))
     out = await registry.execute("search_web", {"query": "url shortener"})
+    assert "TAVILY_API_KEY" in out
+    assert "fetch_url" in out
+
+
+async def test_a_rejected_key_reports_unavailable_instead_of_no_results() -> None:
+    """The silent "No results" the old scraper hit cost a real run sixteen turns. A rejected
+    key is the same permanent failure: say it once, tell the model what to do instead."""
+
+    def reject(query: str) -> list[tuple[str, str, str]]:
+        raise SearchUnavailable("Tavily rejected the API key (HTTP 401)")
+
+    out = await search_tools(reject).execute("search_web", {"query": "url shortener"})
     assert "unavailable" in out
     assert "Do not call search_web again" in out
     assert "fetch_url" in out  # it is told what to do instead
 
 
-async def test_a_dead_search_stops_making_requests_at_all() -> None:
-    """Once search is known dead, further calls must not even reach the network — the point is
+async def test_a_dead_search_stops_calling_the_searcher_at_all() -> None:
+    """Once search is known dead, further calls must not even hit the searcher — the point is
     to stop burning turns, and a turn spent on a request we know will fail is still a turn."""
-    calls: list[str] = []
+    calls = 0
 
-    def count(url: str) -> tuple[str, str]:
-        calls.append(url)
-        return url, CHALLENGE
+    def reject(query: str) -> list[tuple[str, str, str]]:
+        nonlocal calls
+        calls += 1
+        raise SearchUnavailable("nope")
 
-    registry = ToolRegistry(web_tools(fetcher=count))
+    registry = search_tools(reject)
     for _ in range(4):
         assert "unavailable" in await registry.execute("search_web", {"query": "x"})
-    assert len(calls) == 1
+    assert calls == 1
+
+
+async def test_a_transient_search_failure_does_not_latch() -> None:
+    """A timeout or a 5xx is not a broken key — the next call may well work, so keep the tool
+    alive and just report this one."""
+    calls = 0
+
+    def flaky(query: str) -> list[tuple[str, str, str]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise WebError("could not reach Tavily: timed out")
+        return RESULTS
+
+    registry = search_tools(flaky)
+    first = await registry.execute("search_web", {"query": "x"})
+    second = await registry.execute("search_web", {"query": "x"})
+    assert "ERROR: search failed" in first
+    assert "https://bitly.com" in second  # not latched off
 
 
 async def test_two_empty_searches_are_told_to_give_up() -> None:
     """A genuinely empty result set is not a broken tool, but the model still needs a rule for
     when to stop rephrasing."""
-    out = await tools("<html><body>nothing here</body></html>").execute(
-        "search_web", {"query": "asdfgh"}
-    )
+    out = await search_tools(lambda q: []).execute("search_web", {"query": "asdfgh"})
     assert "No results" in out and "search is not working" in out
 
 
