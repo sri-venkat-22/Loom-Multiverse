@@ -1,0 +1,381 @@
+"""The REPL: a persistent prompt, input routed by run state, and the four typed prefixes.
+
+FR-REPL-01..10, FR-KEY-02/04. The split that keeps `loom/tui/` presentation-only (SRS §2.5):
+
+* **Parsing and routing are pure functions.** `classify_input` and `route_free_text` take a
+  string and the run state and return what should happen and the one line to say about it
+  (FR-REPL-03/04). They are what the tests assert, with no terminal in sight.
+* **Side effects go through injected actions or core.** Free text that starts a run calls a
+  `ReplActions` callable the CLI wires to the real pipeline; `!` goes through the agent's own
+  `bash_tool` (the *same* guard, FR-REPL-09); `#` calls `session.append_note` (FR-REPL-10);
+  `/model` persists via `config.set_project_config_value`. The REPL itself owns none of it.
+
+The interactive loop (`Repl.run`) is a `prompt_toolkit` `PromptSession` — history, `@`/`/`
+completion, multi-line, and the shift-tab mode cycle. It takes an injected pipe input/output so
+the whole thing is drivable from a test with no TTY.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from pathlib import Path
+
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.document import Document
+from prompt_toolkit.history import FileHistory, History, InMemoryHistory
+from prompt_toolkit.input import Input
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+from prompt_toolkit.output import Output
+
+from loom.agent.tools.bash import DEFAULT_TIMEOUT, MAX_OUTPUT_CHARS, _run
+from loom.config import Config, set_project_config_value
+from loom.security import CommandDenied, check_command
+from loom.session import LOOM_DIR, append_note, list_runs
+from loom.tui.commands import RunState, dispatch
+from loom.tui.complete import PathCompleter, SlashCompleter
+from loom.tui.theme import DEFAULT_THEME, Theme
+from loom.tui.widgets import (
+    ModelChoice,
+    ModelOption,
+    run_confirm,
+    run_model_picker,
+    run_picker,
+    run_slider,
+)
+
+# --------------------------------------------------------------------------- parsing + routing
+
+
+@dataclass(frozen=True)
+class Route:
+    """Where a line of free text goes, and the one line stated before work begins
+    (FR-REPL-03). `kind` is one of noop / new_idea / gate_feedback / queue / followup."""
+
+    kind: str
+    line: str
+    payload: str = ""
+
+
+#: The run modes shift-tab cycles through (SRS §3.5, FR-KEY-02).
+MODES: tuple[str, ...] = ("auto", "strict", "plan-only", "unattended")
+
+
+def next_mode(mode: str) -> str:
+    """The mode after `mode` in the cycle, wrapping. An unknown mode restarts at the first."""
+    try:
+        return MODES[(MODES.index(mode) + 1) % len(MODES)]
+    except ValueError:
+        return MODES[0]
+
+
+def classify_input(text: str) -> tuple[str, str]:
+    """First character decides the lane: `/` command, `!` bash, `#` note, else free text. Empty
+    or whitespace-only is its own lane so it can be a no-op (FR-REPL-04)."""
+    if not text.strip():
+        return "empty", ""
+    lead = text.lstrip()
+    if lead.startswith("/"):
+        return "slash", lead
+    if lead.startswith("!"):
+        return "bash", lead[1:].strip()
+    if lead.startswith("#"):
+        return "note", lead[1:].strip()
+    return "text", text
+
+
+def route_free_text(state: RunState, text: str, *, gate_phase: str = "the current") -> Route:
+    """FR-REPL-03 — free text means something different in each run state. The returned `line` is
+    printed before anything happens, so a misrouted input can be Esc'd out of."""
+    if not text.strip():
+        return Route("noop", "")
+    if state == "idle":
+        return Route("new_idea", "→ new run: validating this idea. Esc to cancel.", text)
+    if state == "gate":
+        return Route(
+            "gate_feedback",
+            f"→ rejecting the {gate_phase} artifact with this feedback. Esc to cancel.",
+            text,
+        )
+    if state == "running":
+        return Route("queue", "→ queued; sent to the model on the next turn. Esc to cancel.", text)
+    return Route(
+        "followup",
+        "→ run finished. Replay design with this note, or start a new run? Esc to cancel.",
+        text,
+    )
+
+
+def run_bash_line(
+    root: Path, command: str, *, env: dict[str, str] | None = None, timeout: float = DEFAULT_TIMEOUT
+) -> str:
+    """`!` — one shell command through the **same** guard the agent uses (FR-REPL-09). The guard
+    is `security.check_command`, called here exactly as `bash_tool`'s `run_bash` calls it, and a
+    denial returns its reason rather than running anything."""
+    try:
+        check_command(command, root=root)  # the identical gate; `!rm -rf /` dies here
+    except CommandDenied as exc:
+        return str(exc)
+    return asyncio.run(
+        _run(command, root=root, limit=timeout, env=env, max_output=MAX_OUTPUT_CHARS)
+    )
+
+
+# --------------------------------------------------------------------------- injected actions
+
+
+def _noop(*_a: object, **_k: object) -> None:
+    return None
+
+
+@dataclass
+class ReplActions:
+    """The pipeline-touching operations the REPL delegates to. The CLI wires these to real work;
+    a test passes stubs. Defaults are no-ops so a REPL is constructible without a pipeline."""
+
+    start_idea: Callable[[str], None] = _noop
+    submit_feedback: Callable[[str], None] = _noop
+    queue_message: Callable[[str], None] = _noop
+    followup: Callable[[str], None] = _noop
+    start_run: Callable[[str, str, tuple[str, ...]], None] = _noop
+    resume: Callable[[str], None] = _noop
+    run_state: Callable[[], RunState] = lambda: "idle"
+    gate_phase: Callable[[], str] = lambda: "the current"
+    cost_report: Callable[[], str] = lambda: "no spend recorded"
+    status_report: Callable[[], str] = lambda: "no status"
+
+
+# --------------------------------------------------------------------------- the completer
+
+
+class _ReplCompleter(Completer):
+    """Delegates to the slash palette or path completion by what the line looks like."""
+
+    def __init__(self, root: Path) -> None:
+        self._slash = SlashCompleter()
+        self._path = PathCompleter(root)
+
+    def get_completions(self, document: Document, complete_event: object) -> Iterable[Completion]:
+        text = document.text_before_cursor
+        if text.lstrip().startswith("/") and " " not in text.lstrip():
+            yield from self._slash.get_completions(document, complete_event)
+        elif "@" in text.rsplit(" ", 1)[-1]:
+            yield from self._path.get_completions(document, complete_event)
+
+
+# --------------------------------------------------------------------------- the REPL
+
+
+class Repl:
+    """The interactive session. Implements `ReplContext` (the surface `commands.dispatch` drives)
+    and owns the `prompt_toolkit` loop."""
+
+    def __init__(
+        self,
+        *,
+        root: Path,
+        config: Config,
+        actions: ReplActions | None = None,
+        theme: Theme = DEFAULT_THEME,
+        out: Callable[[str], None] | None = None,
+    ) -> None:
+        self.root = Path(root)
+        self.config = config
+        self.actions = actions or ReplActions()
+        self.theme = theme
+        self._out = out or (lambda text: print(text))  # noqa: T201 - tui may print
+        self.mode: str = config.mode  # widens the Literal so it can cycle (FR-KEY-02)
+        runs = list_runs(self.root)
+        self.run_id = runs[-1] if runs else ""
+        self._widget_input: Input | None = None
+        self._widget_output: Output | None = None
+
+    # --------------------------------------------------------------- ReplContext surface
+
+    @property
+    def state(self) -> RunState:
+        return self.actions.run_state()
+
+    def write(self, text: str) -> None:
+        self._out(text)
+
+    def run_model_picker(self, options: list[ModelOption]) -> ModelChoice | None:
+        return run_model_picker(
+            options, theme=self.theme, input=self._widget_input, output=self._widget_output
+        )
+
+    def run_slider(self, levels: list[str], meaning: dict[str, str], start: int) -> str | None:
+        return run_slider(
+            levels,
+            meaning,
+            start=start,
+            theme=self.theme,
+            input=self._widget_input,
+            output=self._widget_output,
+        )
+
+    def run_list(self, title: str, description: str, rows: list[str], footer: str) -> int | None:
+        picked = run_picker(
+            title,
+            description,
+            rows,
+            theme=self.theme,
+            accept={"enter": "select"},
+            footer=footer,
+            input=self._widget_input,
+            output=self._widget_output,
+        )
+        return None if picked is None else picked[0]
+
+    def confirm(self, prompt: str, *, default: bool = True) -> bool:
+        return run_confirm(
+            prompt, default=default, input=self._widget_input, output=self._widget_output
+        )
+
+    def persist_default_model(self, model: str) -> None:
+        set_project_config_value(self.root, "model", model)
+        self.config = self.config.model_copy(update={"model": model})
+
+    def use_model_this_session(self, model: str) -> None:
+        self.config = self.config.model_copy(update={"model": model})
+
+    def persist_default_effort(self, level: str) -> None:
+        set_project_config_value(self.root, "effort", level)
+        # Re-derive the effort-linked knobs from the new preset (drop them so the validator does).
+        data = {
+            k: v
+            for k, v in self.config.model_dump().items()
+            if k not in {"max_turns", "max_usd", "rubric_rounds", "model"}
+        }
+        self.config = Config(**{**data, "effort": level})
+
+    def start_run(self, start: str, stop: str, run_first: tuple[str, ...] = ()) -> None:
+        self.actions.start_run(start, stop, run_first)
+
+    def resume(self, run_id: str) -> None:
+        self.actions.resume(run_id)
+
+    def clear_session(self) -> None:
+        self.run_id = ""
+
+    def cost_report(self) -> str:
+        return self.actions.cost_report()
+
+    def status_report(self) -> str:
+        return self.actions.status_report()
+
+    # --------------------------------------------------------------- one line of input
+
+    def handle(self, text: str) -> None:
+        """Route and act on one submitted line. The pure heart of the loop, so a test can drive
+        it directly without a terminal."""
+        kind, payload = classify_input(text)
+        if kind == "empty":
+            return  # FR-REPL-04 — a no-op, never a run
+        if kind == "slash":
+            dispatch(self, payload)
+            return
+        if kind == "bash":
+            self.write(run_bash_line(self.root, payload))
+            return
+        if kind == "note":
+            path = append_note(self.root, payload)
+            if payload.strip():
+                self.write(f"# noted → {path.relative_to(self.root)}")
+            return
+        self._route_text(text)
+
+    def _route_text(self, text: str) -> None:
+        route = route_free_text(self.state, text, gate_phase=self.actions.gate_phase())
+        if route.kind == "noop":
+            return
+        self.write(route.line)  # FR-REPL-03 — state the route before working
+        {
+            "new_idea": self.actions.start_idea,
+            "gate_feedback": self.actions.submit_feedback,
+            "queue": self.actions.queue_message,
+            "followup": self.actions.followup,
+        }[route.kind](route.payload)
+
+    # --------------------------------------------------------------- the interactive loop
+
+    def _hint(self) -> str:
+        """FR-REPL-02 — mode plus the input prefixes, re-read on every redraw so a mode change
+        shows at once."""
+        g = self.theme.glyph
+        return (
+            f"  {g['mode']} {self.mode} mode (shift+tab to cycle) · "
+            "@ for files · ! for bash · # to remember"
+        )
+
+    def _history(self) -> History:
+        loom = self.root / LOOM_DIR
+        return FileHistory(str(loom / "history")) if loom.is_dir() else InMemoryHistory()
+
+    def _bindings(self) -> KeyBindings:
+        kb = KeyBindings()
+
+        @kb.add("enter")
+        def _submit(event: KeyPressEvent) -> None:
+            buf = event.current_buffer
+            if buf.text.rstrip().endswith("\\"):  # FR-REPL-07 — backslash continues the line
+                buf.text = buf.text.rstrip()[:-1]
+                buf.cursor_position = len(buf.text)
+                buf.insert_text("\n")
+            else:
+                buf.validate_and_handle()
+
+        @kb.add("escape", "enter")  # Alt/Option+Enter — an explicit newline (FR-REPL-07)
+        def _newline(event: KeyPressEvent) -> None:
+            event.current_buffer.insert_text("\n")
+
+        @kb.add("s-tab")  # FR-KEY-02 — cycle the run mode
+        def _cycle(event: KeyPressEvent) -> None:
+            self.mode = next_mode(self.mode)
+            event.app.invalidate()
+
+        return kb
+
+    def run(
+        self, state: object = None, *, input: Input | None = None, output: Output | None = None
+    ) -> int:
+        """The loop. Enter submits, the prompt returns after each line (FR-REPL-01), Ctrl+D exits
+        0, and two Ctrl+C within two seconds exit 5 (FR-KEY-04). `state` is the banner state
+        `start_session` hands in; the loop does not need its fields, only its presence."""
+        self._widget_input, self._widget_output = input, output
+        session: PromptSession[str] = PromptSession(
+            message=f"{self.theme.glyph['prompt']} ",
+            completer=_ReplCompleter(self.root),
+            history=self._history(),
+            key_bindings=self._bindings(),
+            bottom_toolbar=self._hint,
+            complete_while_typing=True,
+            input=input,
+            output=output,
+        )
+        last_interrupt = 0.0
+        while True:
+            try:
+                line = session.prompt()
+            except EOFError:  # Ctrl+D
+                return 0
+            except KeyboardInterrupt:  # Ctrl+C
+                now = time.monotonic()
+                if now - last_interrupt < 2.0:
+                    return 5
+                last_interrupt = now
+                self.write("(interrupted — Ctrl+C again to exit)")
+                continue
+            self.handle(line)
+
+
+def make_repl(
+    *, root: Path, config: Config, actions: ReplActions | None = None, theme: Theme = DEFAULT_THEME
+) -> Callable[[object], int]:
+    """A `repl` callable for `start_session` (FR-CLI-01 wiring). Closes over the session state so
+    the callback matches `start_session`'s `(state) -> int` shape."""
+    return Repl(root=root, config=config, actions=actions, theme=theme).run

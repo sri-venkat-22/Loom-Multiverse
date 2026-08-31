@@ -520,3 +520,39 @@ zero artifacts. Every one of the following was invisible until a real model met 
 - **`loom` with no subcommand routes through a `@app.callback(invoke_without_command=True)`.** The
   REPL is injected into `start_session` (WP-8.2 supplies it); until then a session is the banner,
   and no TTY means banner-then-exit, never a REPL (`FR-CLI-01`).
+
+### WP-8.2 — REPL, command registry, palette, inline widgets (2026-08-31)
+
+- **`prompt_toolkit>=3.0` is a new dependency.** The SRS names it directly ("against
+  `prompt_toolkit` pipe input") and it is what makes the widgets, history, completion and
+  multi-line input drivable headlessly in tests. `loom/tui/` may import it; the core still may
+  not (CLAUDE.md). Its import is kept out of `loom` startup — `cli._repl_for` imports the REPL
+  lazily, so the banner path never pays for it.
+- **Pure logic, thin shell.** Parsing (`classify_input`), routing (`route_free_text`), the
+  registry filter/render, and every widget's *decision* (`model_options`, `phase_rows`,
+  `missing_upstream`, the `*_summary` collapses) are pure functions with no terminal — that is
+  what the acceptance tests assert. The `prompt_toolkit` `Application`s only draw and return a
+  choice. This is the SRS §2.5 boundary made testable.
+- **One registry, `commands.py`.** `/help` and the palette are both renders of `REGISTRY`
+  (`render_help`/`render_palette`), never a second list (`FR-SLASH-05`). Handlers are thin and
+  call an injected `ReplContext`; business actions (persist config, start a run) live behind that
+  protocol so a handler holds no terminal or pipeline logic.
+- **`!` reuses the agent's guard, not a copy.** `run_bash_line` calls `security.check_command`
+  and `bash._run` — the exact two calls `bash_tool`'s `run_bash` makes — so `!rm -rf /` is denied
+  by the identical code path (`FR-REPL-09`), and a denial returns the reason rather than running.
+- **Three small core edits, because the feature is only half in `tui/`.** `config
+  .set_project_config_value` (surgical top-level TOML set, so a `/model` default preserves
+  comments and `[price_table]`), `session.{notes_path,append_note,read_notes}`, and a four-line
+  note injection in `phases/base.execute` (before the cache key, so a new note is a cache miss).
+  Persistence and prompt assembly are business logic and belong in core; `tui/` only writes the
+  note and picks the model.
+- **Model catalog blurbs live in `widgets.py`, prices in `config.price_table`.** The "when to use
+  this" strings are presentation copy, not configuration; the prices are the one costing table
+  (`FR-COST-02`). The picker joins them.
+- **Effort confirm persists; only `/model` has the default-vs-session split.** The SRS slider
+  (`FR-SEL-03`) has Enter=confirm with no session option, so `/effort` writes `config.toml`. The
+  model picker keeps Enter=default / `s`=session (`FR-SEL-02`).
+- **Run state is `idle`/`finished` between prompts for now.** `route_free_text` handles all four
+  states (`FR-REPL-03`, tested per row), but synchronously the REPL only rests at `idle` or
+  `finished`; `gate`/`running` are reached once a phase runs in the background (WP-8.5). Wiring
+  them earlier would mean a fake background — deferred honestly rather than faked.

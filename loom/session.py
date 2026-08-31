@@ -53,6 +53,32 @@ def runs_dir(root: Path) -> Path:
     return Path(root) / LOOM_DIR / "runs"
 
 
+def notes_path(root: Path) -> Path:
+    """`.loom/notes.md` — the user's standing constraints (FR-REPL-10). Project state, so it
+    lives beside `runs/` and is git-ignored with the rest of `.loom/`."""
+    return Path(root) / LOOM_DIR / "notes.md"
+
+
+def append_note(root: Path, note: str) -> Path:
+    """Append one constraint line (the `#` prefix, FR-REPL-10). Blank input is ignored rather
+    than written as an empty bullet."""
+    text = note.strip()
+    path = notes_path(root)
+    if not text:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(f"- {text}\n")
+    return path
+
+
+def read_notes(root: Path) -> str:
+    """The notes file, or "" if there is none. Injected into every phase prompt by `phases/base`
+    under a delimited heading (FR-REPL-10)."""
+    path = notes_path(root)
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
 def list_runs(root: Path) -> list[str]:
     """Run ids, oldest first. Empty if the project has never been run."""
     d = runs_dir(root)

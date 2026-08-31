@@ -34,6 +34,7 @@ from loom.agent.tools.fs import atomic_write
 from loom.agent.tools.registry import Tool, ToolRegistry
 from loom.cache import PhaseCache, cache_key
 from loom.contracts import Provider
+from loom.session import read_notes
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 
@@ -197,6 +198,15 @@ class Phase(ABC):
             task = f"{task}\n\n## Reviewer feedback on your previous attempt\n\n{feedback}"
 
         system = self.system()
+        if root is not None:
+            # FR-REPL-10 — the user's `#` notes are standing constraints on every phase. Injected
+            # before the cache key so adding a note is a cache miss, not a silently-ignored file.
+            notes = read_notes(root).strip()
+            if notes:
+                system = (
+                    f"{system}\n\n## User constraints\n\n"
+                    f"These were set by the user; honour them:\n\n{notes}"
+                )
         model_name = str(getattr(provider, "model", ""))
         key = cache_key(phase=self.name, prompt=system, task=task, model=model_name, config=config)
 

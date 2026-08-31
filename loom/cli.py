@@ -6,13 +6,17 @@ import asyncio
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from enum import IntEnum
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
+
+if TYPE_CHECKING:
+    from loom.tui.commands import RunState
 
 from loom.agent.providers import (
     LiteLLMProvider,
@@ -259,8 +263,84 @@ def _default(ctx: typer.Context, path: Path = PathOpt) -> None:
         out=sys.stdout,
         ask=input,
         on_init=lambda: _init_and_report(root),
+        repl=_repl_for(root) if loom_dir(root).exists() else None,
     )
     raise typer.Exit(code)
+
+
+def _repl_for(root: Path) -> Callable[[Any], int]:
+    """Build the WP-8.2 REPL, wired to the pipeline the flags already reach (the `loom/tui/`
+    invariant: every path it drives is also reachable non-interactively)."""
+    from loom.tui.repl import ReplActions, make_repl
+
+    config = load_config(cwd=root)
+
+    def run(start: str, stop: str, idea: str, run_id: str | None) -> None:
+        # The same path `loom run`/`loom build` take, wrapped so a finished (or refused) phase
+        # returns to the prompt instead of exiting the process (FR-REPL-01).
+        try:
+            _run_phases(
+                idea=idea,
+                path=root,
+                start=start,
+                stop=stop,
+                model=None,
+                judge_model=None,
+                effort=None,
+                budget=None,
+                max_turns=None,
+                max_usd=None,
+                yes=False,
+                no_cache=False,
+                run_id=run_id,
+            )
+        except typer.Exit as exc:
+            if int(exc.exit_code or 0) != 0:
+                typer.echo(f"(phase ended with exit {int(exc.exit_code or 0)})")
+
+    actions = ReplActions(
+        start_idea=lambda idea: run("validate", "build", idea, None),
+        start_run=lambda s, st, _rf: run(s, st, "", _latest_run(root)),
+        resume=lambda rid: run(_resume_start(root, rid), "build", "", rid),
+        run_state=lambda: _repl_run_state(root),
+        cost_report=lambda: _cost_string(root),
+        status_report=lambda: _status_string(root, load_config(cwd=root)),
+    )
+    return make_repl(root=root, config=config, actions=actions, theme=DEFAULT_THEME)
+
+
+def _repl_run_state(root: Path) -> RunState:
+    """The between-prompts run state (FR-REPL-03). Synchronously the REPL only rests at `idle` or
+    `finished`; `gate`/`running` are reached once a phase runs in the background (WP-8.5)."""
+    from loom.phases.base import artifact_path
+
+    session = Session.latest(root)
+    if session is None:
+        return "idle"
+    done = all(artifact_path(root, session.run_id, p).is_file() for p in PHASES)
+    return "finished" if done else "idle"
+
+
+def _resume_start(root: Path, run_id: str) -> str:
+    from loom.phases.base import artifact_path
+
+    todo = [p for p in PHASES if not artifact_path(root, run_id, p).is_file()]
+    return todo[0] if todo else "build"
+
+
+def _cost_string(root: Path) -> str:
+    ledger = Ledger(ledger_path(root))
+    lines = [f"total: ${ledger.total():.4f}"]
+    for phase, usd in ledger.by_phase().items():
+        lines.append(f"  {phase:<10} ${usd:.4f}")
+    return "\n".join(lines)
+
+
+def _status_string(root: Path, config: Config) -> str:
+    return (
+        f"model {config.model} · effort {config.effort} · mode {config.mode} · "
+        f"${config.budget_usd:.2f} budget"
+    )
 
 
 # --------------------------------------------------------------------------- the pipeline

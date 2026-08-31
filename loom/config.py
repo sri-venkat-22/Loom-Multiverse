@@ -7,6 +7,7 @@ renders it, so a user override in config.toml beats the preset.
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
@@ -167,6 +168,46 @@ def apply_credentials(
             env[name] = value
             set_now.append(name)
     return set_now
+
+
+def _toml_scalar(value: str | int | float | bool) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def set_project_config_value(root: Path, key: str, value: str | int | float | bool) -> Path:
+    """Set one top-level key in `.loom/config.toml`, preserving everything else (FR-SEL-02,
+    FR-CFG-04). Surgical rather than round-tripped through `tomllib` so a user's comments, key
+    order and `[price_table]` tables survive a `/model` change untouched.
+
+    Only top-level keys — every field `Config` accepts is one — so the edit never has to reason
+    about which section it is in.
+    """
+    if key not in Config.model_fields:
+        raise KeyError(f"{key!r} is not a config field")
+    path = project_config_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+
+    new_line = f"{key} = {_toml_scalar(value)}"
+    assignment = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    section = re.compile(r"^\s*\[")
+    for i, line in enumerate(lines):
+        if section.match(line):  # top-level region ends at the first table header
+            lines.insert(i, new_line)
+            break
+        if assignment.match(line):
+            lines[i] = new_line
+            break
+    else:
+        lines.append(new_line)
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
