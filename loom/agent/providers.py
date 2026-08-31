@@ -64,6 +64,58 @@ class ProviderError(RuntimeError):
     """A provider call that could not be completed after retries."""
 
 
+class ProviderAuthError(ProviderError):
+    """No usable credentials for this model.
+
+    Split out because it is the one provider failure that is never the provider's fault and
+    never worth retrying — a wrong key stays wrong — and because it is what every first run
+    hits. A traceback here teaches someone that the tool is broken; a sentence teaches them
+    where to put their key.
+    """
+
+
+#: HTTP statuses that mean "your credentials, not our servers".
+AUTH_STATUS = frozenset({401, 403})
+
+#: Exception class names litellm raises for the same thing when it has no status code.
+AUTH_EXCEPTIONS = frozenset({"AuthenticationError", "PermissionDeniedError"})
+
+#: Which environment variable litellm expects, per model-string prefix. Deliberately partial:
+#: an unknown prefix names no variable rather than confidently naming the wrong one.
+KEY_FOR_PREFIX: dict[str, str] = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "nvidia_nim": "NVIDIA_NIM_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "dashscope": "DASHSCOPE_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "ollama": "",  # local, no key
+}
+
+
+def key_variable_for(model: str) -> str:
+    """The environment variable a model string needs, or "" if we do not know."""
+    return KEY_FOR_PREFIX.get(model.split("/")[0], "")
+
+
+def _is_auth(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in AUTH_STATUS
+    return type(exc).__name__ in AUTH_EXCEPTIONS
+
+
+def _auth_error(model: str, exc: Exception) -> ProviderAuthError:
+    variable = key_variable_for(model)
+    where = (
+        f"Set {variable} in your environment, or put it in ~/.loom/credentials.json "
+        f'(mode 0600):\n  {{"{variable}": "..."}}'
+        if variable
+        else "Set the API key environment variable your provider expects."
+    )
+    return ProviderAuthError(f"no usable credentials for {model}.\n{where}\n\nProvider said: {exc}")
+
+
 # --------------------------------------------------------------------------- FR-AGENT-07
 
 
@@ -315,14 +367,40 @@ class LiteLLMProvider:
             )
         return response
 
+    def _preflight(self) -> None:
+        """Refuse before the wire when the key this model needs is simply not set.
+
+        Not redundant with the 401 path. Providers disagree about what a *missing* credential
+        is — NVIDIA NIM reports it as a 500, which is in `RETRY_STATUS`, so without this it
+        would back off four times before failing for a reason no amount of waiting fixes. A
+        key that is present but wrong still goes the 401 route.
+
+        Only on the real path: an injected `acompletion` is a test or a cassette, and neither
+        needs a key.
+        """
+        if self._acompletion is not None:
+            return
+        variable = key_variable_for(self.model)
+        if variable and not os.environ.get(variable):
+            raise ProviderAuthError(
+                f"no usable credentials for {self.model}.\n"
+                f"Set {variable} in your environment, or put it in ~/.loom/credentials.json "
+                f'(mode 0600):\n  {{"{variable}": "..."}}'
+            )
+
     async def _call_with_retries(self, kwargs: dict[str, Any]) -> Any:
         """FR-AGENT-08 — jittered exponential backoff, bounded, one event per retry."""
+        self._preflight()
         call = self._acompletion or _litellm_acompletion()
         last: Exception | None = None
         for attempt in range(self.max_retries):
             try:
                 return await call(**kwargs)
             except Exception as exc:  # noqa: BLE001 - re-raised below unless it is retryable
+                if _is_auth(exc):
+                    # Never retried: four attempts at a key that is missing is four times the
+                    # wait for the same answer.
+                    raise _auth_error(self.model, exc) from exc
                 if not _is_retryable(exc) or attempt == self.max_retries - 1:
                     raise
                 last = exc
@@ -397,6 +475,11 @@ def _completion_cost() -> Callable[..., Any] | None:
 
 def _litellm_acompletion() -> Callable[..., Any]:
     _use_local_price_map()
+    import litellm
+
+    # litellm prints its own provider list and a "give feedback" link to stderr on every error.
+    # Loom already turns the useful part into a sentence; the banner is noise on top of it.
+    litellm.suppress_debug_info = True
     from litellm import acompletion
 
     return cast("Callable[..., Any]", acompletion)

@@ -20,9 +20,9 @@ from loom.agent.loop import LoopResult, run_agent_loop
 from loom.agent.tools.ask_user import ask_user_tool
 from loom.agent.tools.bash import bash_tool
 
-# Borrowed rather than re-written: there should be one implementation of write-then-replace in
-# the tree. WP-3.1 will want it too and should promote it out of the tool module.
-from loom.agent.tools.fs import _atomic_write, fs_tools
+# One implementation of write-then-replace in the tree; `phases/base.py` and `cache.py` use the
+# same one. It stays in the tool module because that is where the FR-TOOL-03 test lives.
+from loom.agent.tools.fs import atomic_write, fs_tools
 from loom.agent.tools.registry import ToolRegistry
 from loom.contracts import Design, Provider, Rubric
 from loom.ledger import Ledger
@@ -113,10 +113,16 @@ async def run_build(
     ledger: Ledger | None = None,
     judge_model: str = "",
     run_id: str = "",
+    feedback: str = "",
     on_event: Callable[..., Any] | None = None,
     ask_user_fn: Callable[..., Any] | None = None,
 ) -> BuildResult:
-    """Build the repo `design` describes, in `workspace`, and grade it against its own rubric."""
+    """Build the repo `design` describes, in `workspace`, and grade it against its own rubric.
+
+    `feedback` is what a reviewer said when they rejected the last build (FR-GATE-02). It is
+    appended to the task rather than to the design, because the design was already approved and
+    a rejected build is a complaint about the code, not about the plan.
+    """
     repo = Workspace.open(workspace)  # FR-WS-02: refuses to build over someone's uncommitted work
     repo.begin_phase(PHASE)
     _emit(on_event, "phase_started", phase=PHASE, turns=max_turns, usd_ceiling=max_usd)
@@ -139,7 +145,7 @@ async def run_build(
     result: LoopResult = await run_agent_loop(
         provider=provider,
         system=PROMPT.read_text(encoding="utf-8"),
-        task=_task(design, skeleton),
+        task=_task(design, skeleton, feedback),
         tools=tools,
         rubric=grader,
         max_turns=max_turns,
@@ -214,7 +220,7 @@ class _Snapshotter:
         self.label = self.repo.snapshot(f"turn-{turn}").label
 
 
-def _task(design: Design, skeleton: ScaffoldResult) -> str:
+def _task(design: Design, skeleton: ScaffoldResult, feedback: str = "") -> str:
     """The Design, rendered for the model. It sees the rubric it will be graded against —
     hiding it would only delay the same information until the first failed round, and the
     prompt's integrity clause is what keeps that from being an invitation."""
@@ -240,6 +246,9 @@ def _task(design: Design, skeleton: ScaffoldResult) -> str:
         )
         if criterion.kind == "shell":
             lines.append(f"    runs: `{criterion.command}`")
+
+    if feedback.strip():
+        lines += ["", "## Reviewer feedback on the previous build", "", feedback.strip()]
     return "\n".join(lines)
 
 
@@ -249,7 +258,7 @@ def _persist_score(root: Path, run_id: str, score: Score) -> Path:
     directory = root / ".loom" / "artifacts" / (run_id or "latest")
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "score.json"
-    _atomic_write(path, score.model_dump_json(indent=2) + "\n")
+    atomic_write(path, score.model_dump_json(indent=2) + "\n")
     return path
 
 

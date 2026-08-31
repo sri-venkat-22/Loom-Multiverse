@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from loom.cli import ExitCode, app, ledger_path
+from loom.config import MODEL_TIERS
 from loom.ledger import Ledger
 from loom.session import Session
 
@@ -107,7 +108,7 @@ def test_status_prints_every_field_the_srs_asks_for(project: Path) -> None:
     result = runner.invoke(app, ["status", "-C", str(project)])
     assert result.exit_code == ExitCode.OK
     assert str(project) in result.output
-    assert "openrouter/qwen/qwen3-coder" in result.output  # model and judge model
+    assert MODEL_TIERS["cheap"] in result.output  # model and judge model
     assert "effort:      medium" in result.output
     assert "mode auto" in result.output
     assert "$5.00 per run" in result.output and "$1.00 per phase" in result.output

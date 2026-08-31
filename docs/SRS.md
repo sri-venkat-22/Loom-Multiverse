@@ -47,6 +47,16 @@
 | 4.2 | Rubric grading engine | ✅ landed |
 | 4.3 | Deterministic scaffold | ✅ landed |
 | 4.4 | Build phase | ✅ landed |
+| 4.5 | Milestone e2e | harness written, **unrun** — needs a provider key |
+| 3.0 | Content-addressed phase cache | ✅ landed |
+| 3.1 | Phase base + structured-output repair | ✅ landed |
+| 3.2 | Validate phase + web tool | ✅ landed |
+| 3.3 | Plan phase | ✅ landed |
+| 3.4 | Design phase | ✅ landed (tuned against the fixture; FR-DES-04 is live, unrun) |
+| 3.5 | Approval gates | ✅ landed |
+| 3.6 | Pipeline wiring + `loom run` | ✅ landed |
+| 3.7 | `loom replay` | ✅ landed |
+| 4.7 | Full-pipeline e2e | harness written, **unrun** — needs a provider key |
 | everything else | — | not started |
 
 ---
@@ -1409,7 +1419,7 @@ passwords hashed with argon2id; rate limits on all auth endpoints; only the usag
 | `FR-RUB-01…09` | 4.2 | ✅ landed |
 | `FR-BUILD-06` | 4.3 | ✅ landed |
 | `FR-BUILD-01…05`, `FR-ART-04` | 4.4 | ✅ landed |
-| R0 milestone | 4.5 | todo |
+| R0 milestone | 4.5 | harness written, unrun |
 | `FR-EVAL-01/02` | 4.6 | todo |
 | `FR-COST-03` | 5.1 | todo |
 | `FR-AGENT-10`, `FR-SESS-06` | 5.2 | todo |

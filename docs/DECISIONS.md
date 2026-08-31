@@ -297,3 +297,147 @@ reviewing, not the JSON.*
   on the placeholder suite, `import shortener` resolves, and `.venv` stays out of git because
   `uv init` writes a `.gitignore` covering it — so per-turn snapshots stay small. `.pytest_cache`
   is *not* in that `.gitignore`, which is precisely the case WP-4.2's memo re-stamp handles.
+
+## WP-4.5 — the milestone harness (2026-08-31)
+
+- **The harness is written; the milestone is not met.** Nothing here has run against a real
+  model — there is no key on this machine. `make milestone` is the command; the number it
+  produces is the actual WP-4.5 result and belongs in this file when it exists.
+- The test prints a full report on **both** paths, and `run_build` is wrapped so a provider that
+  dies on turn 30 still prints what turn 29 bought before re-raising. A failed milestone that
+  costs a dollar and yields only a traceback has wasted most of what it cost. The report carries
+  status, score per criterion, turns, spend by phase, the files produced, tool-call counts,
+  retries, and the path to a JSONL event trace.
+- Model, judge, budget and turn cap are environment variables (`LOOM_E2E_*`), so comparing Qwen
+  against Sonnet is a shell variable rather than an edit. Defaults are the cheap tier and the
+  $1.00 the plan sets.
+- `ask_user_fn=AskUser(yes=True)`: a question with nobody to answer it would hang the milestone.
+- The judge provider is built without a ledger of its own. `grade()` records judge spend itself
+  under `phase="judge"`, and a second ledger would double-count it.
+- Credentials are read from `~/.loom/credentials.json` as well as the environment (FR-CFG-06),
+  but the check that does it can never raise at import: this module is imported by every
+  `pytest` run, so a wrongly-permissioned credentials file would otherwise break `make check`
+  for the whole suite. It degrades to a skip reason instead.
+- A non-live `test_the_milestone_harness_is_wired_before_anyone_pays_for_it` asserts the parts
+  that can silently make the milestone unpassable — the threshold, the budget, that the
+  criterion the anti-gaming assertion names still exists, and that the model string maps to a
+  known API key variable.
+- Verified end to end against a deliberately invalid key: the fixture loads, the workspace is
+  created, the scaffold produces `pyproject.toml`, `src/shortener/__init__.py` and the
+  placeholder suite, the tool registry is built, the loop starts, and a 401 surfaces
+  immediately rather than being retried (401 is correctly absent from `RETRY_STATUS`). That run
+  also found a `NoneType` bug in the failure-path report, which is the reason to smoke a
+  reporting path rather than trust it.
+
+## Phase 3 — the Shape A phases, gates, pipeline and replay (2026-08-31)
+
+- **`phases/base.py` runs the agent loop once and then repairs with plain provider calls.** A
+  repair re-uses the transcript and appends the validation error as a user message, so a
+  three-attempt phase costs three calls rather than three agent loops. It is also what makes
+  FR-SESS-05's "exactly one provider call" true for a tool-free phase.
+- **The output schema is generated into the system prompt, not requested through the provider's
+  native structured-output mode.** Native mode is per-provider and conflicts with tool use on
+  most of them, and Validate needs tools. Marked `ponytail:` in `base.py` with the hook
+  (`LiteLLMProvider(extra=...)`) for the day the repair rate shows up in the eval harness.
+- **`Phase.refine()` does two different things on purpose.** Rewriting is silent (Plan moves an
+  over-scoped feature to `non_goals` — which five of seven are the v0 is a call the model made
+  by ordering them, and a repair round to re-make it is money for nothing). Raising `ValueError`
+  lands in the repair loop (Design's rubric checks — a rubric that cannot be graded has to go
+  back). `ValidationError` is caught before `ValueError` because pydantic's is a subclass.
+- **FR-DES-03 is enforced in `refine`, not in `contracts.py`.** "Weights sum to 1.0" and "some
+  shell criterion runs the tests" are true of a *good* rubric, not of every `Rubric` — the
+  fixtures in `test_rubric.py` legitimately have neither. `test_design.py` asserts the
+  hand-written fixture clears the gate, so a rule that is wrong fails a test rather than a run.
+- **Test-runner detection is a substring match against a six-entry tuple.** A parser per runner
+  is a subsystem; a false negative costs one repair round, a false positive costs a build that
+  was never really tested — so the list errs toward being asked again.
+- **Subclass `prepare_input` keywords are all optional, with an explicit check.** Required
+  keywords narrow the base signature and mypy is right to refuse them. The guard turns a
+  misuse into "the plan phase needs a Validation artifact" instead of a `TypeError`.
+- **The web tools take an injected `fetcher`.** Every unit test in the project keeps its promise
+  not to open a socket, including the ones about page parsing.
+- **`search_web` scrapes one HTML endpoint with a regex** rather than adding a keyed search API.
+  A signup form between a user and their first run is worse than a parser that will need
+  fixing; the upgrade path is a key in `config.toml`. Marked `ponytail:` at the call site.
+- **The web tool refuses private, loopback and link-local addresses.** The URL a phase fetches
+  can come from a page a phase already fetched, so "the model chose it" is not a trust
+  argument, and `169.254.169.254` is one hop away. The residual DNS-rebinding window is named
+  in the docstring rather than closed; closing it needs a custom connector.
+- **`SEC-04`'s delimiter, its note and the system clause are one set of constants in `web.py`.**
+  A prompt promising framing that the tools do not apply is worse than no promise, so the tool
+  and the clause cannot be edited apart.
+- **The run budget is a `Provider` decorator (`BudgetGuard`) over one shared `RunBudget`.**
+  FR-PIPE-03 says "before every provider call across all phases"; a decorator makes that
+  structural instead of four call sites remembering to add up. `.model` is passed through
+  because the phase cache keys on it.
+- **`budget.check()` also runs before each phase, not only before each call.** A phase handed a
+  ceiling of zero exits `budget_exhausted` without ever calling a provider, and the run would
+  otherwise report "invalid artifact" for what is plainly an empty wallet.
+- **`PipelineResult.phases_run` records a phase that produced an artifact, approved or not.**
+  `loom resume` reads the artifacts on disk; a `phases_run` that disagreed with them would be a
+  lie in every report.
+- **A rejection is appended to the phase input; an edit skips the re-run entirely.** Showing the
+  model its own rejected artifact is how you get the same artifact back with nicer wording, and
+  paying a model to reproduce a decision a human just made is waste. Rejections are capped at
+  two: past that the answer is `edit`, not a third invoice.
+- **`run_build` gained a `feedback` parameter** so the last gate behaves like the other three.
+  It is appended to the task, not to the design: the design was already approved, and a
+  rejected build is a complaint about the code.
+- **`loom replay` bypasses the cache and never overwrites.** An unchanged prompt would otherwise
+  serve the old answer and make zero calls, which is the opposite of the point; and comparing
+  two prompts is worthless if the second run destroys the first's output. Slots are
+  `design.replay-N.json`, N one past the highest present, so deleting one does not make the
+  next replay overwrite a comparison someone still has open.
+- **`_atomic_write` was promoted to `atomic_write`** in `agent/tools/fs.py` rather than moved to
+  a new module. Three importers now, and a new file for eight lines is worse than a public name
+  in the module whose test already covers it.
+- **`config.apply_credentials()` replaced the copy in `tests/e2e/test_build_urlshortener.py`.**
+  One implementation of "credentials file into the environment", and `loom run` needs it too.
+- **WP-4.7's e2e prints every artifact in full on both paths.** When a two-dollar run fails, the
+  question is which phase wrote the thing that made the rest impossible, and nothing else
+  answers it. Its non-live `test_the_harness_is_wired_before_anyone_pays_for_it` checks the
+  acceptance threshold, the budget and the failure-path report for free.
+- **The Design phase's own rubric threshold is asserted in WP-4.7**, not just the score. A phase
+  that writes its own bar can pass by lowering it; the acceptance number is ours.
+- **A gated run with no TTY is refused, not auto-approved.** Auto-approving would be the
+  friendlier default and the wrong one: nobody piping into a command expects it to spend money
+  unsupervised because it could not find them. `--yes` is the explicit way to say so.
+
+## First-run credentials (2026-08-31)
+
+- **Found by actually running `loom validate` with no key: it printed a litellm traceback.**
+  Every first-time user would hit that on their first command, and a traceback reads as "this
+  tool is broken" rather than "you have not set a key". `ProviderAuthError` now names the exact
+  environment variable and the credentials-file path, and `cli.py` catches `ProviderError` and
+  exits 2. The mapping lives in `providers.py` — the one module allowed to know litellm's
+  exception shapes — so `cli.py` still imports no provider SDK.
+- **An auth failure is never retried.** Four attempts at a key that is missing is four times the
+  wait for the same answer. 401/403 skip the backoff entirely.
+- **`litellm.suppress_debug_info = True`** at import: litellm prints its provider list and a
+  feedback link to stderr on every error, on top of a message Loom has already phrased.
+- **`KEY_FOR_PREFIX` moved from the WP-4.5 e2e into `providers.py`**, so the skip reason and the
+  runtime error name the same variable. `test_providers.py` asserts every model in `MODEL_TIERS`
+  maps to one — a default model whose key we cannot name gives the unhelpful message.
+- **`nvidia_nim` added to `KEY_FOR_PREFIX`**, and a *pre-flight* check added alongside the 401
+  path. Providers disagree about what a **missing** credential is: OpenRouter says 401, NVIDIA
+  NIM says 500 — which is in `RETRY_STATUS`, so without the pre-flight it backed off four times
+  for a reason no amount of waiting fixes. The pre-flight only runs when `acompletion` was not
+  injected, so tests and cassettes are untouched. Found by pointing the model checker at a
+  provider nobody had tried yet, which is the argument for having the checker.
+- **A model with no entry in the price table costs $0.00, and that is load-bearing, not
+  cosmetic.** `--budget`, `max_usd` and the `budget_exhausted` exit all read zero spend, so
+  `max_turns` becomes the only ceiling that binds. Fine for a free endpoint, dangerous if
+  anyone assumes the dollar caps still work. Asserted in `test_providers.py`.
+- **The cheap tier is now `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free`.** Chosen against
+  OpenRouter's model API rather than a blog post: it advertises `tools` and `tool_choice`, which
+  is the one capability that decides whether a model can drive the build phase, plus a 1M
+  context. It does *not* advertise `response_format` / `structured_outputs` — the paid variant
+  does — which costs nothing here only because `phases/base.py` puts the schema in the prompt.
+  Had WP-3.1 gone the native-structured-output route, this model would not have worked at all.
+- **Both variants are in `DEFAULT_PRICE_TABLE`, the free one at 0.0 on purpose.** An absent
+  model and a free one both cost $0.00 through `_fallback_cost`; the entry is how the ledger
+  says "this is free" rather than "we have no idea". The paid variant is listed so switching off
+  `:free` gives real numbers with no further edit.
+- **Two tests asserted Qwen's numbers where they meant an invariant** — that every tier is
+  priced, and that the judge stays on the pinned cheap tier whatever `--model` says. Rewritten
+  to assert those, so the next model swap does not fail them spuriously.

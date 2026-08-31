@@ -15,12 +15,15 @@ from loom.agent import providers
 from loom.agent.loop import run_agent_loop
 from loom.agent.providers import (
     LiteLLMProvider,
+    ProviderAuthError,
     ProviderError,
+    cost_of,
+    key_variable_for,
     normalise_messages,
     to_response,
 )
 from loom.agent.tools.registry import ToolRegistry, tool
-from loom.config import Price
+from loom.config import MODEL_TIERS, Price
 from loom.ledger import Ledger
 from loom.testing.cassette import CassetteExhausted, CassetteProvider, load_cassette
 
@@ -484,3 +487,95 @@ async def test_record_cassettes() -> None:
             max_usd=0.25,
         )
         assert load_cassette(path), f"nothing recorded for {model}"
+
+
+# --------------------------------------------------------------------------- credentials
+
+
+class _Unauthorised(Exception):
+    """Shaped like litellm's, which carries the status on the exception."""
+
+    status_code = 401
+
+
+async def test_a_missing_key_names_the_variable_instead_of_raising_litellm_s_error() -> None:
+    """The first wall every new user hits. A traceback here reads as "this tool is broken"."""
+
+    async def refuse(**kwargs: Any) -> Any:
+        raise _Unauthorised("No cookie auth credentials found")
+
+    provider = LiteLLMProvider("openrouter/qwen/qwen3-coder", acompletion=refuse)
+    with pytest.raises(ProviderAuthError) as caught:
+        await provider.complete([{"role": "user", "content": "hi"}])
+
+    message = str(caught.value)
+    assert "OPENROUTER_API_KEY" in message
+    assert "credentials.json" in message
+    assert "No cookie auth credentials found" in message  # the provider's own words survive
+
+
+async def test_a_bad_key_is_not_retried() -> None:
+    """Four attempts at a key that is wrong is four times the wait for the same answer."""
+    attempts = 0
+
+    async def refuse(**kwargs: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        raise _Unauthorised("nope")
+
+    provider = LiteLLMProvider("anthropic/claude-sonnet-5", acompletion=refuse, base_delay=0.0)
+    with pytest.raises(ProviderAuthError):
+        await provider.complete([{"role": "user", "content": "hi"}])
+    assert attempts == 1
+
+
+async def test_an_unknown_provider_prefix_names_no_variable_rather_than_the_wrong_one() -> None:
+    async def refuse(**kwargs: Any) -> Any:
+        raise _Unauthorised("nope")
+
+    provider = LiteLLMProvider("somebody/else", acompletion=refuse)
+    with pytest.raises(ProviderAuthError, match="the API key environment variable"):
+        await provider.complete([{"role": "user", "content": "hi"}])
+
+
+def test_every_model_loom_names_itself_maps_to_a_key_variable() -> None:
+    """A default model whose key variable we cannot name would give the unhelpful message."""
+    for model in MODEL_TIERS.values():
+        assert key_variable_for(model), f"{model} has no known key variable"
+
+
+def test_a_free_model_is_priced_at_zero_rather_than_raising() -> None:
+    """FR-COST-02 — and the consequence worth knowing: a model with no price makes every USD
+    ceiling non-binding. `max_turns` becomes the only real one."""
+    warned: list[dict[str, Any]] = []
+    usd = cost_of(
+        raw=None,
+        model="nvidia_nim/some/free-model",
+        in_tokens=1_000_000,
+        out_tokens=1_000_000,
+        price_table={},
+        on_event=lambda kind, **f: warned.append(f),
+    )
+    assert usd == 0.0
+    assert warned and warned[0]["reason"] == "price_table_fallback"
+    assert warned[0]["priced"] is False
+
+
+async def test_an_unset_key_is_refused_before_the_wire(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Providers disagree about what a *missing* credential is — NVIDIA NIM calls it a 500,
+    which is retryable, so without a pre-flight it backs off four times for a reason no amount
+    of waiting fixes."""
+    monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
+    provider = LiteLLMProvider("nvidia_nim/nvidia/some-model")
+    with pytest.raises(ProviderAuthError, match="NVIDIA_NIM_API_KEY"):
+        await provider.complete([{"role": "user", "content": "hi"}])
+
+
+async def test_the_preflight_stays_out_of_the_way_of_tests_and_cassettes() -> None:
+    """An injected `acompletion` is a test or a cassette; neither needs a key."""
+
+    async def canned(**kwargs: Any) -> Any:
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    provider = LiteLLMProvider("nvidia_nim/nvidia/some-model", acompletion=canned)
+    assert (await provider.complete([{"role": "user", "content": "hi"}])).text == "ok"

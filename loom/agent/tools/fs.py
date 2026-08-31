@@ -76,7 +76,7 @@ def fs_tools(root: Path) -> list[Tool]:
         """Write a file, creating parent directories as needed. Replaces any existing file."""
         target = resolve_in_jail(root, path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(target, content)
+        atomic_write(target, content)
         return f"wrote {len(content)} characters to {path}"
 
     @tool
@@ -107,7 +107,7 @@ def fs_tools(root: Path) -> list[Tool]:
                 "context lines so exactly one occurrence matches."
             )
 
-        _atomic_write(target, text.replace(old, new, 1))
+        atomic_write(target, text.replace(old, new, 1))
         return f"replaced 1 occurrence in {path}"
 
     return [read_file, write_file, str_replace]
@@ -137,7 +137,7 @@ def _not_found(path: str, old: str, text: str) -> str:
     )
 
 
-def _atomic_write(target: Path, content: str) -> None:
+def atomic_write(target: Path, content: str) -> None:
     """FR-TOOL-03 — write beside the target, fsync, then rename over it.
 
     `os.replace` is atomic within a filesystem, and the temp file is in the same directory so it
