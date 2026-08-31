@@ -495,3 +495,28 @@ zero artifacts. Every one of the following was invisible until a real model met 
 - The command is **`preview`**, not `demo` — matching SRS §5.1 and `loom/preview.py` (WP-6.4).
 - `design/terminal/` export is current as of 2026-08-30 and confirmed untouched since; WP-8.x
   builds against it as-is.
+- Search is now **Tavily** (`loom/agent/tools/web.py`), replacing the dead DuckDuckGo scrape.
+  One keyed POST to the fixed `api.tavily.com/search` — the key (`TAVILY_API_KEY`, from env or
+  `~/.loom/credentials.json`, never config.toml per FR-CFG-06) never rides along to a URL the
+  model or a page chose, which is the property the old GET-only rule protected. No key ⇒
+  search_web reports itself unavailable and points at `fetch_url`; a rejected key latches it off
+  the same way the bot-challenge used to; a transient failure does not latch.
+
+### WP-8.1 — session shell + banner (2026-08-31)
+
+- **`loom/tui/theme.py` landed early, with 8.1.** The banner may not hard-code a glyph or logo
+  (CLAUDE.md), so it needs a theme to read from, and §12 is "the section that becomes code
+  directly". Built the `Spinner`/`Theme` dataclasses and the full `DEFAULT_THEME` data now; left
+  `Theme.load()` (`.loom/theme.toml`) and `degrade()` for WP-8.3, where `FR-ANIM-05/04` and the
+  live output that exercises them live. The dataclass shape is final so 8.3 extends, not reshapes.
+- **Logo is mark 1a (plain weave `▀▄`), per the terminal decision above.** `glyph["logo"]` keeps
+  1a's single char `▚`; the selection cursor stays `❯`. The drawing renders 1b — overridden here.
+- **Context windows are curated in `cli.py`, not read from litellm.** `get_model_info` is
+  unreliable for our `openrouter/*`/`anthropic/*` strings — the same reason `DEFAULT_PRICE_TABLE`
+  is hand-kept. A model not in the map shows no context rather than a guessed one.
+- **Billing is a literal `"BYOK"` in R1.** It is the only mode until the R2 account service; the
+  banner field is where `FR-ACCT-04`'s plan name goes later. Model is shown short
+  (`model.split("/")[-1]` without the `:free` tag); provider is the prefix, shown separately.
+- **`loom` with no subcommand routes through a `@app.callback(invoke_without_command=True)`.** The
+  REPL is injected into `start_session` (WP-8.2 supplies it); until then a session is the banner,
+  and no TTY means banner-then-exit, never a REPL (`FR-CLI-01`).

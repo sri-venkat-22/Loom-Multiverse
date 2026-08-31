@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import sys
 from enum import IntEnum
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
 
 import typer
 
-from loom.agent.providers import LiteLLMProvider, ProviderError, ProviderQuotaError
+from loom.agent.providers import (
+    LiteLLMProvider,
+    ProviderError,
+    ProviderQuotaError,
+    key_variable_for,
+)
 from loom.agent.tools.ask_user import AskUser
 from loom.cache import PhaseCache
 from loom.config import (
@@ -27,6 +35,9 @@ from loom.ledger import Ledger
 from loom.pipeline import PHASES, PipelineResult, UnattendedWithoutBudget, run_pipeline
 from loom.replay import replay as replay_phase
 from loom.session import LOOM_DIR, Session, list_runs
+from loom.tui.app import start_session
+from loom.tui.banner import BannerState
+from loom.tui.theme import DEFAULT_THEME
 
 app = typer.Typer(add_completion=False, help="Turn an idea into a working, tested codebase.")
 
@@ -86,27 +97,38 @@ def _is_git_repo(root: Path) -> bool:
     return result.returncode == 0
 
 
-@app.command()
-def init(path: Path = PathOpt) -> None:
-    """Create `.loom/` and make sure the project is a git repo."""
-    root = path.resolve()
-    root.mkdir(parents=True, exist_ok=True)
+def initialise(root: Path) -> tuple[bool, bool]:
+    """Create `.loom/{runs,artifacts,cache}`, the gitignore and the ledger, and `git init` if
+    the directory is not already a repo (FR-CLI-04). Returns (was_fresh, git_created).
 
+    Shared by the `init` command and the session's first-run offer (FR-CLI-05) so the two
+    cannot drift on what "initialised" means.
+    """
+    root.mkdir(parents=True, exist_ok=True)
     d = loom_dir(root)
     fresh = not d.exists()
-    for sub in (d, d / "runs", d / "artifacts", d / "cache"):  # FR-CLI-04
+    for sub in (d, d / "runs", d / "artifacts", d / "cache"):
         sub.mkdir(parents=True, exist_ok=True)
     # Loom's own state is never the user's to commit.
     (d / ".gitignore").write_text("*\n", encoding="utf-8")
     Ledger(ledger_path(root))
 
-    typer.echo(f"{'initialised' if fresh else 'already initialised'} {d}")
-
-    if _is_git_repo(root):
-        typer.echo("git repo: yes")
-    else:
+    git_created = not _is_git_repo(root)
+    if git_created:
         subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
-        typer.echo("git repo: created")
+    return fresh, git_created
+
+
+def _init_and_report(root: Path) -> None:
+    fresh, git_created = initialise(root)
+    typer.echo(f"{'initialised' if fresh else 'already initialised'} {loom_dir(root)}")
+    typer.echo("git repo: created" if git_created else "git repo: yes")
+
+
+@app.command()
+def init(path: Path = PathOpt) -> None:
+    """Create `.loom/` and make sure the project is a git repo."""
+    _init_and_report(path.resolve())
 
 
 @app.command()
@@ -146,6 +168,99 @@ def status(path: Path = PathOpt) -> None:
     typer.echo(f"spend:       ${ledger.total():.4f} total")
     for phase, usd in by_phase.items():
         typer.echo(f"  {phase:<10} ${usd:.4f}")
+
+
+# ----------------------------------------------------------------- the session shell (8.1)
+
+#: Context windows for the models Loom names itself, curated for the same reason
+#: `config.DEFAULT_PRICE_TABLE` is: `litellm.get_model_info` is unreliable for these
+#: openrouter/anthropic strings. A model not listed here shows no context (honest over guessed).
+_CONTEXT_TOKENS: dict[str, int] = {
+    "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": 1_000_000,
+    "openrouter/nvidia/nemotron-3-ultra-550b-a55b": 1_000_000,
+    "openrouter/qwen/qwen3-coder": 262_144,
+    "openrouter/qwen/qwen3-coder-480b": 262_144,
+    "anthropic/claude-sonnet-5": 200_000,
+}
+
+
+def _version() -> str:
+    try:
+        return _pkg_version("loom-cli")
+    except PackageNotFoundError:  # pragma: no cover - only when running from an unbuilt tree
+        return "0+unknown"
+
+
+def _display_cwd(root: Path) -> str:
+    home = Path.home()
+    if root == home:
+        return "~"
+    try:
+        return f"~/{root.relative_to(home)}"
+    except ValueError:
+        return str(root)
+
+
+def _credential_source(model: str, set_from_file: list[str]) -> str:
+    """Where the provider key came from — never the key itself (FR-CLI-03)."""
+    var = key_variable_for(model)
+    if not var:
+        return "local model — no key needed"
+    if var in set_from_file:
+        return "~/.loom/credentials.json"
+    if os.environ.get(var):
+        return f"{var} (env)"
+    return f"not set — export {var}"
+
+
+def _run_state(root: Path) -> str:
+    if not loom_dir(root).exists():
+        return "no run in progress"
+    session = Session.latest(root)
+    if session is None:
+        return "no run in progress · / for commands"
+    spent = Ledger(ledger_path(root)).total(session.run_id)
+    return f"run {session.run_id} · ${spent:.2f} spent"
+
+
+def _banner_state(root: Path) -> BannerState:
+    config = load_config(cwd=root)
+    set_from_file = apply_credentials()  # FR-CFG-06 — keys into env, so the source is knowable
+    return BannerState(
+        version=_version(),
+        model=config.model.split("/")[-1].split(":")[0],
+        context_tokens=_CONTEXT_TOKENS.get(config.model),
+        effort=config.effort,
+        billing="BYOK",  # the only R1 mode; R2 shows the account plan (FR-ACCT-04)
+        provider=config.model.split("/")[0],
+        cwd=_display_cwd(root),
+        credential_source=_credential_source(config.model, set_from_file),
+        run_state=_run_state(root),
+        mode=config.mode,
+        theme=DEFAULT_THEME,
+    )
+
+
+@app.callback(invoke_without_command=True)
+def _default(ctx: typer.Context, path: Path = PathOpt) -> None:
+    """`loom` with no subcommand starts the interactive session (FR-CLI-01)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    root = path.resolve()
+    try:
+        state = _banner_state(root)
+    except Exception as exc:  # a bad config or credentials file should not crash into a traceback
+        typer.echo(f"cannot start a session: {exc}")
+        raise typer.Exit(ExitCode.USAGE) from exc
+    code = start_session(
+        state=state,
+        initialised=loom_dir(root).exists(),
+        is_tty=sys.stdin.isatty(),
+        out=sys.stdout,
+        ask=input,
+        on_init=lambda: _init_and_report(root),
+    )
+    raise typer.Exit(code)
 
 
 # --------------------------------------------------------------------------- the pipeline
