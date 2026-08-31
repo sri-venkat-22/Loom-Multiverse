@@ -11,7 +11,7 @@ from typing import Any
 
 import typer
 
-from loom.agent.providers import LiteLLMProvider, ProviderError
+from loom.agent.providers import LiteLLMProvider, ProviderError, ProviderQuotaError
 from loom.agent.tools.ask_user import AskUser
 from loom.cache import PhaseCache
 from loom.config import (
@@ -256,6 +256,11 @@ def _run_phases(
     except UnattendedWithoutBudget as exc:
         typer.echo(str(exc))
         raise typer.Exit(ExitCode.USAGE) from exc
+    except ProviderQuotaError as exc:
+        # Exit 6, not 2: nothing about the invocation was wrong, and a script that retries on
+        # a usage error would hammer a limit that only a clock will clear.
+        typer.echo(str(exc))
+        raise typer.Exit(ExitCode.QUOTA) from exc
     except ProviderError as exc:
         # The first wall every new user hits. A traceback here reads as "this tool is broken".
         typer.echo(str(exc))
@@ -516,6 +521,9 @@ def replay(
                 ask_user_fn=AskUser(yes=True, on_event=session.log_event),
             )
         )
+    except ProviderQuotaError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(ExitCode.QUOTA) from exc
     except (ValueError, FileNotFoundError, ProviderError) as exc:
         typer.echo(str(exc))
         raise typer.Exit(ExitCode.USAGE) from exc

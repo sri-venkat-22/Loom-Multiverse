@@ -557,3 +557,26 @@ async def test_a_failed_build_reports_its_own_status(tmp_path: Path) -> None:
     assert result.status in {"stalled", "budget_exhausted"}
     assert result.build is not None and not result.build.passed
     assert result.build.snapshot  # FR-BUILD-02 — something to resume from
+
+
+async def test_a_research_phase_does_not_get_the_build_s_turn_budget(tmp_path: Path) -> None:
+    """A real run gave validate forty turns and it spent sixteen searching. A phase that
+    cannot write a file has no use for a cap sized for one that can."""
+    fake = FakeLLM(list(SHAPE_A))
+    await pipeline(tmp_path, fake=fake, config=config(max_turns=40))
+    # The loop is handed the cap, so assert on what the phase was actually allowed.
+    from loom.pipeline import SHAPE_A_TURNS
+
+    assert SHAPE_A_TURNS < 40
+    searching = FakeLLM(
+        [
+            Response(
+                tool_calls=[ToolCall(id=f"c{i}", name="search_web", arguments={"query": "again"})],
+                usd_cost=0.001,
+            )
+            for i in range(SHAPE_A_TURNS + 5)
+        ]
+    )
+    result = await pipeline(tmp_path, fake=searching, stop="validate", config=config(max_turns=40))
+    assert result.status == "invalid"  # ran out of turns, no artifact
+    assert searching.call_count == SHAPE_A_TURNS

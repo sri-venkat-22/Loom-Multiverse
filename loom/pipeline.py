@@ -55,6 +55,13 @@ WARN_AT = 0.80
 #: re-runs is enough to fix a real complaint; past that the answer is `edit`.
 MAX_REJECTS = 2
 
+#: Turns a research phase gets, regardless of what the build is allowed. Validate, Plan and
+#: Design produce one JSON object; the only thing more turns buys is more searching, and a
+#: real run spent sixteen of them on a search tool that was returning nothing. `max_turns` is
+#: sized for a build — forty turns of writing and testing code — and handing that same number
+#: to a phase that cannot write a file is how a research phase becomes the expensive one.
+SHAPE_A_TURNS = 12
+
 Status = Literal[
     "passed", "abandoned", "budget_exhausted", "stalled", "blocked", "invalid", "no-go"
 ]
@@ -383,7 +390,7 @@ async def _shape_a(
         root=root,
         run_id=run_id,
         feedback=feedback,
-        max_turns=config.max_turns,
+        max_turns=min(config.max_turns, SHAPE_A_TURNS),
         # A research phase that spends the build's budget has nothing left to build with.
         max_usd=min(config.max_usd, max(budget.remaining, 0.0)),
         cache=cache,

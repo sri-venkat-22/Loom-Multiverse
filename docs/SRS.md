@@ -47,7 +47,7 @@
 | 4.2 | Rubric grading engine | ✅ landed |
 | 4.3 | Deterministic scaffold | ✅ landed |
 | 4.4 | Build phase | ✅ landed |
-| 4.5 | Milestone e2e | harness written, **unrun** — needs a provider key |
+| 4.5 | Milestone e2e | ✅ **MET** 2026-08-31 — Nemotron 3 Ultra (free), clears its rubric in 6m19s |
 | 3.0 | Content-addressed phase cache | ✅ landed |
 | 3.1 | Phase base + structured-output repair | ✅ landed |
 | 3.2 | Validate phase + web tool | ✅ landed |
@@ -56,7 +56,7 @@
 | 3.5 | Approval gates | ✅ landed |
 | 3.6 | Pipeline wiring + `loom run` | ✅ landed |
 | 3.7 | `loom replay` | ✅ landed |
-| 4.7 | Full-pipeline e2e | harness written, **unrun** — needs a provider key |
+| 4.7 | Full-pipeline e2e | harness written; first attempt exhausted the free daily quota inside Validate |
 | everything else | — | not started |
 
 ---

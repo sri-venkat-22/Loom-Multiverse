@@ -441,3 +441,57 @@ reviewing, not the JSON.*
 - **Two tests asserted Qwen's numbers where they meant an invariant** — that every tier is
   priced, and that the judge stays on the pinned cheap tier whatever `--model` says. Rewritten
   to assert those, so the next model swap does not fail them spuriously.
+
+## WP-4.5 — the milestone, met (2026-08-31)
+
+- **`make milestone` passes.** `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` built the URL
+  shortener from the hand-written Design and cleared its own rubric in **6m19s**, cost $0.00
+  (free tier). 25 tool calls — `run_bash`×15, `write_file`×6, `read_file`×3, `str_replace`×1 —
+  and 2 provider retries. Every file in the manifest was produced, including the README.
+  The project's central question is answered: a cheap model driven by this loop does produce a
+  repo that clears a rubric.
+- The `run_bash`:`write_file` ratio of 15:6 is the interesting number. The model spent more than
+  half its turns running things rather than writing them, which is the behaviour `prompts/build.md`
+  asks for ("A test suite you have not executed is a guess") and the first evidence it lands.
+- **Only one `str_replace` in 25 calls.** Q-2 — whether models emit unique-enough strings for
+  exact replace — stays effectively open: this run barely exercised it. Do not read the plan's
+  "a fifth of diff hunks fail quietly" concern as settled either way yet.
+- **Q-1 is not answered and cannot be by this model.** A free tier reports $0.00, so
+  turns-to-green (25) is the only real number from this run. USD per run needs one paid re-run.
+
+## WP-4.7 — first attempt, and four bugs it paid for (2026-08-31)
+
+The run died on OpenRouter's free daily cap (50 requests) **without leaving Validate**: 16 turns,
+zero artifacts. Every one of the following was invisible until a real model met a real network.
+
+- **`search_web` was returning nothing, silently.** DuckDuckGo's HTML endpoint now serves a
+  bot-detection challenge. Loom does not work around those, so the scraper is dead. The damage
+  was not the failure but its silence: the model searched, got "No results", rephrased, got
+  "No results", and had no way to learn the tool was broken. It burned turns and then coped by
+  guessing pricing-page URLs directly and fetching them, which worked. `is_bot_challenge()` now
+  latches the tool off after one challenge response and returns an instruction to stop calling
+  it and use `fetch_url` instead. **A tool that cannot work must say so once, not fail quietly
+  forever.**
+- **The same URL was fetched twice in a row** — `bitly.com/pricing`, 10,415 characters both
+  times. A wasted turn and 10k tokens of duplicate context. `web_tools()` now keeps a per-phase
+  seen-set and returns a pointer instead of the page.
+- **A research phase was given the build's turn budget.** `max_turns` is sized for forty turns
+  of writing and testing code; handing the same number to a phase that cannot write a file is
+  how research becomes the expensive phase. `SHAPE_A_TURNS = 12` now caps Validate, Plan and
+  Design independently.
+- **A daily quota was retried like a transient.** 429 is in `RETRY_STATUS`, correctly — but the
+  per-day kind resets on a clock, and backing off eight seconds for it wastes time and then
+  prints forty lines of provider JSON to explain a one-sentence problem. `ProviderQuotaError`
+  now fails fast, reads `X-RateLimit-Reset` out of the payload and says when it clears. Exit
+  code 6, not 2: nothing about the invocation was wrong.
+- Worth stating plainly: **the structured-output repair loop never fired.** All 7 `retry`
+  events were provider backoff (5× "Service temporarily overloaded" upstream, 2× rate limit).
+  Whatever else is wrong, `phases/base.py` was not the problem.
+
+## Terminal decisions (2026-08-31)
+
+- Logo: **1a, plain weave.** The drawing is currently rendered with 1b (shuttle `❯`); WP-8.1
+  re-renders the banner with 1a.
+- The command is **`preview`**, not `demo` — matching SRS §5.1 and `loom/preview.py` (WP-6.4).
+- `design/terminal/` export is current as of 2026-08-30 and confirmed untouched since; WP-8.x
+  builds against it as-is.

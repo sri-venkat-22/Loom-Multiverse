@@ -22,6 +22,7 @@ from loom.agent.tools.web import (
     _check_url,
     html_to_text,
     http_get,
+    is_bot_challenge,
     parse_results,
     web_tools,
 )
@@ -192,3 +193,75 @@ def test_urllib_errors_become_web_errors(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(web.urllib.request, "build_opener", lambda *a: Boom())
     with pytest.raises(WebError, match="dns is down"):
         http_get("https://x.test")
+
+
+# --------------------------------------------------------------------------- learned the hard way
+
+CHALLENGE = """<html><body><h1>DuckDuckGo</h1>
+<p>Unfortunately, bots use DuckDuckGo too.</p>
+<p>Please complete the following challenge to confirm this search was made by a human.</p>
+</body></html>"""
+
+
+def test_a_bot_challenge_is_recognised_rather_than_parsed() -> None:
+    assert is_bot_challenge(CHALLENGE)
+    assert not is_bot_challenge(SEARCH)
+
+
+async def test_search_says_it_is_unavailable_instead_of_no_results() -> None:
+    """The silent "No results" this replaces cost a real run sixteen turns: the model searched,
+    got nothing, rephrased, got nothing, and had no way to learn the tool was broken."""
+    registry = tools(CHALLENGE)
+    out = await registry.execute("search_web", {"query": "url shortener"})
+    assert "unavailable" in out
+    assert "Do not call search_web again" in out
+    assert "fetch_url" in out  # it is told what to do instead
+
+
+async def test_a_dead_search_stops_making_requests_at_all() -> None:
+    """Once search is known dead, further calls must not even reach the network — the point is
+    to stop burning turns, and a turn spent on a request we know will fail is still a turn."""
+    calls: list[str] = []
+
+    def count(url: str) -> tuple[str, str]:
+        calls.append(url)
+        return url, CHALLENGE
+
+    registry = ToolRegistry(web_tools(fetcher=count))
+    for _ in range(4):
+        assert "unavailable" in await registry.execute("search_web", {"query": "x"})
+    assert len(calls) == 1
+
+
+async def test_two_empty_searches_are_told_to_give_up() -> None:
+    """A genuinely empty result set is not a broken tool, but the model still needs a rule for
+    when to stop rephrasing."""
+    out = await tools("<html><body>nothing here</body></html>").execute(
+        "search_web", {"query": "asdfgh"}
+    )
+    assert "No results" in out and "search is not working" in out
+
+
+async def test_fetching_the_same_url_twice_costs_nothing_the_second_time() -> None:
+    """A real run fetched bitly.com/pricing twice in a row: a wasted turn and 10k tokens of
+    duplicate context."""
+    calls: list[str] = []
+
+    def count(url: str) -> tuple[str, str]:
+        calls.append(url)
+        return url, PAGE
+
+    registry = ToolRegistry(web_tools(fetcher=count))
+    first = await registry.execute("fetch_url", {"url": "https://bitly.com/pricing"})
+    second = await registry.execute("fetch_url", {"url": "https://bitly.com/pricing"})
+
+    assert "Bitly" in first
+    assert "already fetched" in second
+    assert len(second) < 300  # a pointer, not ten thousand characters again
+    assert calls == ["https://bitly.com/pricing"]
+
+
+async def test_a_different_url_still_fetches() -> None:
+    registry = tools()
+    await registry.execute("fetch_url", {"url": "https://a.test"})
+    assert "Bitly" in await registry.execute("fetch_url", {"url": "https://b.test"})

@@ -20,8 +20,10 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from loom.config import DEFAULT_PRICE_TABLE, Price
@@ -64,6 +66,15 @@ class ProviderError(RuntimeError):
     """A provider call that could not be completed after retries."""
 
 
+class ProviderQuotaError(ProviderError):
+    """A provider allowance that resets on a clock, not on a retry.
+
+    Separate from `ProviderError` because the remedy is different in kind: waiting eight
+    seconds cannot fix a limit that resets at midnight, and the useful thing to tell someone
+    is *when* — and that credit raises the ceiling — not that four attempts failed.
+    """
+
+
 class ProviderAuthError(ProviderError):
     """No usable credentials for this model.
 
@@ -76,6 +87,10 @@ class ProviderAuthError(ProviderError):
 
 #: HTTP statuses that mean "your credentials, not our servers".
 AUTH_STATUS = frozenset({401, 403})
+
+#: A 429 that says this is a *daily* allowance is not something backoff fixes. Retrying it
+#: burns seconds and prints a wall of provider JSON to explain a one-sentence problem.
+DAILY_QUOTA_MARKERS = ("per-day", "per_day", "daily", "free-models-per-day")
 
 #: Exception class names litellm raises for the same thing when it has no status code.
 AUTH_EXCEPTIONS = frozenset({"AuthenticationError", "PermissionDeniedError"})
@@ -103,6 +118,28 @@ def _is_auth(exc: Exception) -> bool:
     if isinstance(status, int):
         return status in AUTH_STATUS
     return type(exc).__name__ in AUTH_EXCEPTIONS
+
+
+def _is_daily_quota(exc: Exception) -> bool:
+    if getattr(exc, "status_code", None) != 429 and type(exc).__name__ != "RateLimitError":
+        return False
+    return any(marker in str(exc).lower() for marker in DAILY_QUOTA_MARKERS)
+
+
+def _quota_error(model: str, exc: Exception) -> ProviderQuotaError:
+    """Say when it resets. That is the only fact that changes what someone does next."""
+    when = ""
+    match = re.search(r'"X-RateLimit-Reset"\s*:\s*"?(\d{10,13})"?', str(exc))
+    if match:
+        stamp = int(match.group(1))
+        moment = datetime.fromtimestamp(stamp / 1000 if stamp > 10**11 else stamp, UTC)
+        when = f" It resets at {moment.astimezone().strftime('%H:%M on %d %b')} local time."
+    return ProviderQuotaError(
+        f"{model}: the provider's allowance for this account is spent, and this is a limit "
+        f"that resets on a clock rather than something retrying fixes.{when}\n"
+        "Wait for the reset, add credit to raise the ceiling, or run with --model on a "
+        "provider you have quota with."
+    )
 
 
 def _auth_error(model: str, exc: Exception) -> ProviderAuthError:
@@ -397,6 +434,8 @@ class LiteLLMProvider:
             try:
                 return await call(**kwargs)
             except Exception as exc:  # noqa: BLE001 - re-raised below unless it is retryable
+                if _is_daily_quota(exc):
+                    raise _quota_error(self.model, exc) from exc
                 if _is_auth(exc):
                     # Never retried: four attempts at a key that is missing is four times the
                     # wait for the same answer.

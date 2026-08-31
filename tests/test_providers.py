@@ -17,6 +17,7 @@ from loom.agent.providers import (
     LiteLLMProvider,
     ProviderAuthError,
     ProviderError,
+    ProviderQuotaError,
     cost_of,
     key_variable_for,
     normalise_messages,
@@ -579,3 +580,60 @@ async def test_the_preflight_stays_out_of_the_way_of_tests_and_cassettes() -> No
 
     provider = LiteLLMProvider("nvidia_nim/nvidia/some-model", acompletion=canned)
     assert (await provider.complete([{"role": "user", "content": "hi"}])).text == "ok"
+
+
+class _DailyCap(Exception):
+    """Shaped like the one OpenRouter's free tier actually sends."""
+
+    status_code = 429
+
+    def __str__(self) -> str:
+        return (
+            'RateLimitError: {"error":{"message":"Rate limit exceeded: free-models-per-day. '
+            'Add 10 credits to unlock 1000 free model requests per day","code":429,'
+            '"metadata":{"headers":{"X-RateLimit-Limit":"50","X-RateLimit-Remaining":"0",'
+            '"X-RateLimit-Reset":"1788220800000"}}}}'
+        )
+
+
+async def test_a_daily_cap_is_not_retried_and_says_when_it_resets() -> None:
+    """Waiting eight seconds cannot fix a limit that resets at midnight. A real run backed off
+    twice and then printed forty lines of provider JSON to explain a one-sentence problem."""
+    attempts = 0
+
+    async def capped(**kwargs: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        raise _DailyCap()
+
+    provider = LiteLLMProvider("openrouter/free/model", acompletion=capped, base_delay=0.0)
+    with pytest.raises(ProviderQuotaError) as caught:
+        await provider.complete([{"role": "user", "content": "hi"}])
+
+    assert attempts == 1, "a daily cap must not be retried"
+    message = str(caught.value)
+    assert "resets at" in message
+    assert "add credit" in message.lower()
+
+
+class _Overloaded(Exception):
+    status_code = 429
+
+    def __str__(self) -> str:
+        return "RateLimitError: too many requests, slow down"
+
+
+async def test_an_ordinary_rate_limit_is_still_retried() -> None:
+    """The per-minute kind is exactly what backoff is for. Only the daily kind bypasses it."""
+    attempts = 0
+
+    async def flaky(**kwargs: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise _Overloaded()
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    provider = LiteLLMProvider("openrouter/free/model", acompletion=flaky, base_delay=0.0)
+    assert (await provider.complete([{"role": "user", "content": "hi"}])).text == "ok"
+    assert attempts == 3
