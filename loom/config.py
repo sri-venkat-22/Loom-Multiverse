@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import os
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from loom.security import read_credentials
 
 CONFIG_NAME = "config.toml"
 CREDENTIALS_NAME = "credentials.json"
@@ -44,8 +46,15 @@ EFFORT_PRESETS: dict[str, EffortPreset] = {
 DEFAULT_EFFORT: Effort = "medium"
 
 #: Which model an effort tier resolves to when the user has not named one.
+#:
+#: The cheap tier is Nemotron 3 Ultra's free OpenRouter variant. Verified against OpenRouter's
+#: model API before being chosen: it advertises `tools` and `tool_choice`, which is the only
+#: capability that actually decides whether a model can drive the build phase, and a 1M context.
+#: It does **not** advertise `response_format` / `structured_outputs` — the paid variant does —
+#: which costs Loom nothing, because `phases/base.py` puts the schema in the prompt rather than
+#: asking the provider for native structured output.
 MODEL_TIERS: dict[str, str] = {
-    "cheap": "openrouter/qwen/qwen3-coder",
+    "cheap": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
     "strong": "anthropic/claude-sonnet-5",
 }
 
@@ -63,6 +72,15 @@ class Price(BaseModel):
 #: when `litellm.completion_cost()` cannot price a model string; a stale price beats a crash
 #: after the tokens are already paid for.
 DEFAULT_PRICE_TABLE: dict[str, Price] = {
+    # Listed at zero on purpose rather than left out. An absent model and a free one both cost
+    # $0.00 through `_fallback_cost`, but only one of them is a fact — the entry is how the
+    # ledger says "this is free" instead of "we have no idea what this costs".
+    "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": Price(
+        input_per_mtok=0.0, output_per_mtok=0.0
+    ),
+    "openrouter/nvidia/nemotron-3-ultra-550b-a55b": Price(
+        input_per_mtok=0.50, output_per_mtok=2.20
+    ),
     "openrouter/qwen/qwen3-coder": Price(input_per_mtok=0.30, output_per_mtok=0.30),
     "openrouter/qwen/qwen3-coder-480b": Price(input_per_mtok=0.90, output_per_mtok=0.90),
     "anthropic/claude-sonnet-5": Price(input_per_mtok=3.00, output_per_mtok=15.00),
@@ -130,6 +148,25 @@ def user_config_path(home: Path) -> Path:
 def credentials_path(home: Path) -> Path:
     """FR-CFG-06 — provider keys live here, never in a project config."""
     return Path(home) / ".loom" / CREDENTIALS_NAME
+
+
+def apply_credentials(
+    *, home: Path | None = None, env: MutableMapping[str, str] | None = None
+) -> list[str]:
+    """FR-CFG-06 — provider keys from `~/.loom/credentials.json` into the environment.
+
+    An existing environment variable wins: a key exported for one command should not be
+    silently replaced by a stale one in a file. Returns the names it set, for `loom doctor`.
+    Raises on a group-readable file rather than using it — `read_credentials` explains why.
+    """
+    env = os.environ if env is None else env
+    home = Path(home) if home is not None else Path.home()
+    set_now = []
+    for name, value in read_credentials(credentials_path(home)).items():
+        if not env.get(name):
+            env[name] = value
+            set_now.append(name)
+    return set_now
 
 
 def _read_toml(path: Path) -> dict[str, Any]:

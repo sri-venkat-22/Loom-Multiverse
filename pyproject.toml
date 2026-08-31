@@ -5,6 +5,7 @@ description = "CLI that takes a founder's idea and produces a working, tested co
 requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
+    "litellm>=1.98.0",
     "pydantic>=2.7",
     "typer>=0.12",
 ]
@@ -29,8 +30,10 @@ packages = ["loom"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-m 'not live'"
-markers = ["live: hits real provider APIs, costs money"]
+markers = [
+    "live: hits real provider APIs, costs money. Skipped unless `-m live` (see tests/conftest.py)",
+    "slow: real git repositories and full build loops. Excluded from the on-every-save tier",
+]
 
 [tool.ruff]
 line-length = 100

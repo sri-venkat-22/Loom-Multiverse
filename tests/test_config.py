@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from loom.config import (
     DEFAULT_EFFORT,
+    DEFAULT_PRICE_TABLE,
     EFFORT_PRESETS,
     MODEL_TIERS,
     Config,
@@ -244,7 +245,11 @@ def test_the_price_table_ships_prices_and_accepts_overrides(dirs: tuple[Path, Pa
     """FR-COST-02 — an unpriced model must never raise mid-run, so the fallback is populated."""
     home, cwd = dirs
     default = Config()
-    assert default.price_table[MODEL_TIERS["cheap"]].input_per_mtok == 0.30
+    # Every tier Loom can pick for you is priced. The *number* is not the invariant — a free
+    # model's is legitimately 0.0 — the presence of an entry is, because that is what stops
+    # `_fallback_cost` guessing after the tokens are already paid for.
+    for model in MODEL_TIERS.values():
+        assert model in default.price_table
     assert default.price_table[MODEL_TIERS["strong"]].output_per_mtok == 15.00
 
     _write(
@@ -291,3 +296,13 @@ def test_config_sources_names_the_layer_each_key_came_from(dirs: tuple[Path, Pat
 def test_config_sources_covers_every_key(dirs: tuple[Path, Path]) -> None:
     home, cwd = dirs
     assert set(config_sources(env={}, cwd=cwd, home=home)) == set(Config.model_fields)
+
+
+def test_the_default_models_are_priced_and_have_a_known_key_variable() -> None:
+    """Two ways a model swap silently degrades the tool: a price nobody entered makes every
+    USD ceiling read $0.00, and a prefix nobody mapped makes a missing key an unhelpful error."""
+    from loom.agent.providers import key_variable_for
+
+    for tier, model in MODEL_TIERS.items():
+        assert model in DEFAULT_PRICE_TABLE, f"the {tier} tier model has no price entry"
+        assert key_variable_for(model), f"the {tier} tier model has no known key variable"
