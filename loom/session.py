@@ -35,6 +35,7 @@ EVENT_KINDS = frozenset(
         "gate_decision",
         "graded",
         "retry",
+        "fallback_switch",
         "budget_warning",
         "compacted",
         "phase_finished",

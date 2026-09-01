@@ -61,6 +61,32 @@ def test_banner_is_pure() -> None:
     assert render_banner(state) == render_banner(state)
 
 
+def test_render_banner_can_drop_the_input_chrome() -> None:
+    # The interactive session passes include_input=False so the live REPL owns the prompt, the
+    # rule and the mode hint; drawing a second static copy here is what put the cursor above the
+    # line you actually typed on. The still (default) keeps the full frame.
+    full = render_banner(_state())
+    header = render_banner(_state(), include_input=False)
+    assert "Loom v9.9.9" in header and "no run in progress" in header  # header unchanged
+    assert "auto mode on" in full and "auto mode on" not in header  # hint only in the still
+    assert DEFAULT_THEME.glyph["cursor"] in full  # the still keeps the prompt block …
+    assert DEFAULT_THEME.glyph["cursor"] not in header  # … the live header does not
+
+
+def test_banner_colours_on_truecolor_but_keeps_fields_greppable() -> None:
+    # FR-ANIM-03 — a truecolor terminal gets 24-bit SGR, and no colour splits a field it wraps.
+    out = render_banner(_state(cap="truecolor"))
+    assert "\x1b[38;2;" in out
+    for field in ("Loom v9.9.9", "qwen3-coder", "262k context", "auto mode on"):
+        assert field in out, field
+
+
+def test_banner_stays_plain_off_the_colour_rungs() -> None:
+    # FR-ANIM-04 — NO_COLOR / a pipe / a dumb term drops every escape byte, Unicode kept.
+    for cap in ("no_color", "ascii"):
+        assert "\x1b[" not in render_banner(_state(cap=cap))
+
+
 def test_context_window_formats_or_is_omitted() -> None:
     assert "262k context" in render_banner(_state(context_tokens=262_144))
     assert "1M context" in render_banner(_state(context_tokens=1_000_000))
@@ -140,6 +166,47 @@ def test_tty_runs_the_injected_repl() -> None:
         repl=lambda _s: 5,
     )
     assert code == 5
+
+
+def test_interactive_session_omits_the_input_chrome_the_repl_draws_live() -> None:
+    # FR-CLI-01 fix — with a live REPL the printed banner is the header only, so the pulsing
+    # prompt below it is the one true input line (no static cursor block above it).
+    out = io.StringIO()
+    start_session(
+        state=_state(),  # cap defaults to no_color → printed at once, no stagger
+        initialised=True,
+        is_tty=True,
+        out=out,
+        ask=lambda _p: "",
+        on_init=lambda: None,
+        repl=lambda _s: 0,
+    )
+    printed = out.getvalue()
+    assert "Loom v9.9.9" in printed and "no run in progress" in printed
+    assert "auto mode on" not in printed  # the mode hint is the live toolbar's job now
+    assert DEFAULT_THEME.glyph["cursor"] not in printed  # no second, static prompt block
+
+
+def test_non_interactive_still_keeps_the_whole_frame() -> None:
+    out = io.StringIO()
+    start_session(
+        state=_state(),
+        initialised=True,
+        is_tty=False,  # piped — no live REPL, so the still must be complete
+        out=out,
+        ask=lambda _p: "",
+        on_init=lambda: None,
+        repl=lambda _s: 0,
+    )
+    assert "auto mode on" in out.getvalue()
+
+
+def test_reveal_writes_every_line_in_order() -> None:
+    from loom.tui.app import _reveal
+
+    out = io.StringIO()
+    _reveal(["a", "b", "c"], out, delay=0.0)
+    assert out.getvalue() == "a\nb\nc\n"
 
 
 def test_first_run_offer_accepted_initialises_then_shows_the_banner() -> None:

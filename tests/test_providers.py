@@ -14,6 +14,7 @@ import pytest
 from loom.agent import providers
 from loom.agent.loop import run_agent_loop
 from loom.agent.providers import (
+    MAX_OUTPUT_TOKENS,
     LiteLLMProvider,
     ProviderAuthError,
     ProviderError,
@@ -421,6 +422,23 @@ async def test_tools_are_passed_through_and_no_litellm_specific_kwarg_is() -> No
     assert "caching" not in sent
 
 
+async def test_every_completion_is_bounded_and_stops_at_a_fabricated_turn() -> None:
+    """The runaway guard: a weak model that keeps generating past its own turn — inventing the
+    next `### User:` turn and drifting into unrelated text — is cut at the wire. `extra` still wins
+    so a caller can raise or lower the bound."""
+    call = flaky()
+    provider = LiteLLMProvider("m", acompletion=call)
+    await provider.complete([{"role": "user", "content": "go"}])
+    sent = call.calls[0]
+    assert sent["max_tokens"] == MAX_OUTPUT_TOKENS
+    assert "\n### User:" in sent["stop"]
+
+    override = flaky()
+    bounded = LiteLLMProvider("m", acompletion=override, extra={"max_tokens": 512})
+    await bounded.complete([{"role": "user", "content": "go"}])
+    assert override.calls[0]["max_tokens"] == 512
+
+
 async def test_every_call_is_ledgered_under_its_phase(tmp_path: Path) -> None:
     """Ground rule 8 — every WP that touches a model call records its cost."""
     ledger = Ledger(tmp_path / "ledger.db")
@@ -686,3 +704,154 @@ async def test_without_on_token_the_provider_does_not_stream() -> None:
     response = await provider.complete([{"role": "user", "content": "go"}])
     assert response.text == "ok"
     assert "stream" not in call.calls[0]
+
+
+# --------------------------------------------------------------------------- fallback chain
+
+
+class _Overloaded503(Exception):
+    """The shape Loom actually sees: litellm wraps a mid-stream provider overload as
+    `MidStreamFallbackError`, a `ServiceUnavailableError` whose `status_code` is 503 — so it is
+    already retryable by status, and the crash was only that streaming had no fallback at all."""
+
+    status_code = 503
+
+    def __str__(self) -> str:
+        return "litellm.MidStreamFallbackError: Service temporarily overloaded"
+
+
+async def test_no_fallbacks_configured_behaves_exactly_as_a_single_provider() -> None:
+    """The chain is one link by default: a failure raises after its own retries, no phantom
+    extra attempt from an empty fallback list."""
+    call = flaky(*[Throttled("no") for _ in range(10)])
+    provider = LiteLLMProvider("m", acompletion=call, sleep=recording_sleep(), max_retries=2)
+    with pytest.raises(Throttled):
+        await provider.complete([{"role": "user", "content": "go"}])
+    assert len(call.calls) == 2
+
+
+async def test_a_fallback_takes_over_when_the_primary_is_overloaded(tmp_path: Path) -> None:
+    """The whole point: an overloaded primary hands off to the next model, and the cost is
+    attributed to the model that actually answered."""
+    events: list[dict[str, Any]] = []
+    seen: list[str] = []
+
+    async def by_model(**kwargs: Any) -> dict[str, Any]:
+        seen.append(kwargs["model"])
+        if kwargs["model"] == "primary/x":
+            raise _Overloaded503()
+        return {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+    ledger = Ledger(tmp_path / "ledger.db")
+    provider = LiteLLMProvider(
+        "primary/x",
+        fallback_models=["backup/y"],
+        acompletion=by_model,
+        sleep=recording_sleep(),
+        max_retries=1,
+        on_event=lambda kind, **f: events.append({"kind": kind, **f}),
+        ledger=ledger,
+        phase="build",
+        run_id="r",
+    )
+
+    response = await provider.complete([{"role": "user", "content": "go"}])
+
+    assert response.text == "ok"
+    assert seen == ["primary/x", "backup/y"]  # tried the primary, then fell over
+    switch = [e for e in events if e["kind"] == "fallback_switch"]
+    assert switch and (switch[0]["from_model"], switch[0]["to_model"]) == ("primary/x", "backup/y")
+    assert ledger.rows()[0]["model"] == "backup/y"  # cost belongs to who answered
+
+
+async def test_the_last_link_in_the_chain_propagates_its_error() -> None:
+    """When everything is down the final failure is raised, never swallowed into a silent pass."""
+
+    async def always_down(**kwargs: Any) -> dict[str, Any]:
+        raise _Overloaded503()
+
+    provider = LiteLLMProvider(
+        "primary/x",
+        fallback_models=["backup/y", "ollama/local"],
+        acompletion=always_down,
+        sleep=recording_sleep(),
+        max_retries=1,
+    )
+    with pytest.raises(_Overloaded503):
+        await provider.complete([{"role": "user", "content": "go"}])
+
+
+async def test_streaming_falls_over_when_the_stream_dies_before_the_first_delta() -> None:
+    """The reported failure: the primary drops on connect, before any token is shown. Nothing is
+    on screen yet, so switching providers is clean."""
+    collected: list[str] = []
+    seen: list[str] = []
+
+    async def by_model(**kwargs: Any) -> Any:
+        seen.append(kwargs["model"])
+
+        async def primary() -> Any:
+            raise _Overloaded503()
+            yield  # pragma: no cover - only here to make this an async generator
+
+        async def backup() -> Any:
+            for piece in ["He", "llo"]:
+                yield {"choices": [{"delta": {"content": piece}}]}
+
+        return primary() if kwargs["model"] == "primary/x" else backup()
+
+    def builder(chunks: list[Any], messages: Any = None) -> dict[str, Any]:
+        text = "".join(c["choices"][0]["delta"]["content"] for c in chunks)
+        return {
+            "choices": [{"message": {"content": text}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+        }
+
+    provider = LiteLLMProvider(
+        "primary/x",
+        fallback_models=["backup/y"],
+        acompletion=by_model,
+        chunk_builder=builder,
+        on_token=collected.append,
+    )
+    response = await provider.complete([{"role": "user", "content": "hi"}])
+
+    assert response.text == "Hello"
+    assert collected == ["He", "llo"]  # only the fallback's tokens ever reached the screen
+    assert seen == ["primary/x", "backup/y"]
+
+
+async def test_streaming_does_not_fall_over_once_a_delta_is_on_screen() -> None:
+    """The invariant the hand-rolled plan got wrong: after a token is printed, a provider switch
+    would print a second answer on top of it. So a mid-stream drop *after* the first delta fails
+    the turn instead, surfacing the original error."""
+    collected: list[str] = []
+    seen: list[str] = []
+
+    async def by_model(**kwargs: Any) -> Any:
+        seen.append(kwargs["model"])
+
+        async def primary() -> Any:
+            yield {"choices": [{"delta": {"content": "Par"}}]}
+            raise _Overloaded503()
+
+        async def backup() -> Any:
+            yield {"choices": [{"delta": {"content": "SHOULD-NOT-APPEAR"}}]}
+
+        return primary() if kwargs["model"] == "primary/x" else backup()
+
+    provider = LiteLLMProvider(
+        "primary/x",
+        fallback_models=["backup/y"],
+        acompletion=by_model,
+        chunk_builder=lambda chunks, messages=None: {"choices": [{"message": {"content": ""}}]},
+        on_token=collected.append,
+    )
+    with pytest.raises(_Overloaded503):
+        await provider.complete([{"role": "user", "content": "hi"}])
+
+    assert collected == ["Par"]  # what was already streamed, and nothing more
+    assert seen == ["primary/x"]  # the fallback was never tried

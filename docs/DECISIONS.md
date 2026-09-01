@@ -665,3 +665,77 @@ zero artifacts. Every one of the following was invisible until a real model met 
   quota/network failure is distinguishable from a genuine 0-score build (both were previously
   `passed:false/score:0/turns:0`, so a free-tier daily cap read as "Loom scored 0%"). `main` gathers
   with `return_exceptions=True` so one fixture dying in setup no longer wipes the whole report.
+
+## WP-8.5 — /background and /rewind (2026-09-01)
+
+- **/background starts a detached run rather than pulling an in-flight foreground phase into the
+  background.** FR-SESS-07 says "continue the *current* phase in the background," but the R1 REPL
+  runs phases synchronously — while one runs, `handle()` is blocked and no `/background` can be
+  typed. So `/background [phase]` runs the pipeline in a daemon thread (`loom/tui/background.py`)
+  and returns the prompt at once; a live thread makes `Repl.state == "running"`, which reuses the
+  existing FR-SLASH-09 gating to keep a second run off the same workspace. The run stays observable
+  through `loom status`/`/status` because the thread writes events through its own `Session` — which
+  is the observability clause FR-SESS-07 actually asks for. Detaching an already-running foreground
+  phase on a keypress is the documented upgrade path; it needs the async REPL that 8.5 was deferred
+  behind (§6.8). One run at a time, no cancellation — a backgrounded run dies with the process.
+- **/rewind truncates the transcript by counting assistant messages.** The agent loop appends
+  exactly one assistant message per turn, so "restore the message history to turn N" is "keep up to,
+  but not including, the (N+1)-th assistant message" (`replay.truncate_transcript`). `scaffold` maps
+  to turn 0. The workspace half is the existing `Workspace.reset_to("turn-N")`; `reset_to` spares
+  `.loom/`, so the transcript we then trim survives the tree reset.
+- **No `rewound` event.** `EVENT_KINDS` is closed (a new kind is also an SRS §6 edit), and a rewind
+  is a user action on a paused run, not something the run did. `rewind` returns a `RewindResult` the
+  caller prints instead. Add a kind if `loom status` ever needs to show a rewind happened.
+
+## WP-7.4 — packaging, CI, PyPI (2026-09-01)
+
+- **PyPI publish uses Trusted Publishing (OIDC), not a stored API token.** `publish.yml` triggers on
+  a GitHub Release, builds with `uv build`, and publishes with `pypa/gh-action-pypi-publish` from a
+  `pypi` environment with `id-token: write`. One-time setup is a trusted-publisher entry on pypi.org
+  for `loom-cli` → this repo/workflow — no secret to rotate or leak.
+- **The asciinema cast is a recorded artifact, not a committed one.** `scripts/record-demo.sh`
+  produces `docs/loom-demo.cast`; the README carries the embed with a placeholder cast id plus a
+  static console transcript so the Demo section is useful before the cast is uploaded. A real cast
+  needs a TTY session (and money, for a real build), so it is generated, not fabricated in-repo.
+
+## NFR-PERF-01 — lazy CLI imports (2026-09-01)
+
+- **The CLI keeps a lazy provider callable seam instead of importing the adapter at registration time.**
+  This preserves test injection while keeping `loom.pipeline`, Pydantic-backed config, and the
+  provider adapter off `import loom.cli`; `asyncio` and credential parsing are lazy for the same reason.
+
+## FR-AGENT-08 — provider fallback chain (2026-09-01)
+
+- **`config.fallback_models` is a plain ordered list Loom walks itself in `LiteLLMProvider._run`,
+  not `litellm.Router`.** Router would fight the single-adapter design and its mid-stream fallback
+  still cannot un-emit tokens. Streaming falls over only *before the first delta* (`_StreamCommitted`
+  guards the committed case), since a post-delta switch would print a second answer over the first.
+  litellm's `MidStreamFallbackError` is a `ServiceUnavailableError` (status 503) — already retryable
+  by status, so the only fix needed was giving the streaming path a fallback loop at all. Cost is
+  ledgered against the model that answered. End the chain with a local `ollama/...` model to survive
+  every remote provider being unreachable.
+
+## WP-8.1/8.2 — launch reveal and the live input line (2026-09-01)
+
+- **The banner's input chrome (prompt line, gradient rule, mode hint) is drawn only in the still.**
+  `render_banner(state, include_input=False)` in the interactive path stops the frame at the run
+  state, because the live REPL renders the pulsing prompt, its cursor and the mode-hint toolbar
+  itself. Drawing a second, static `> █` in the banner is what put the cursor a line above the one
+  you actually typed on. The still (piped / non-TTY) keeps the full frame, so FR-ANIM-04 parity and
+  the banner tests are unchanged.
+- **Launch staggers the header a line at a time on an animating TTY (`_reveal`), design §03.** It
+  only reorders *when* the same lines appear — the still prints them at once — so a dumb terminal or
+  a pipe loses nothing. The per-line delay is `1/theme.max_fps`, tied to the same theme data the
+  spinner reads rather than a fresh constant.
+- **The under-prompt divider was left out of the live view rather than forced into
+  `bottom_toolbar`.** prompt_toolkit anchors the toolbar to the screen bottom behind
+  `reserve_space_for_menu`, so a rule there sits in a gap, not under the prompt. The effort gradient
+  still animates where it belongs — the prompt glyph pulses through it (FR-ANIM-03).
+
+- **Every completion carries `max_tokens` (16384) and stop sequences (`\n### User:` &c.), set in
+  `providers.py`.** A weak model on an OpenAI-compatible endpoint (Nemotron via NVIDIA NIM) ran
+  past its own turn — fabricating `### User:` repair turns verbatim from `base._repair_message` and
+  drifting into an unrelated document — because nothing on the wire stopped it. The stop markers
+  cut it the instant it writes the other side of the conversation; `max_tokens` is the backstop.
+  `extra` still overrides both. Prompt tweak alongside: `plan.md`/`design.md` now say features and
+  stack are about *this* idea, not the URL-shortener example, and a founder-named language wins.

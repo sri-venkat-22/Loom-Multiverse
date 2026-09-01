@@ -17,6 +17,7 @@ Three deliberate choices:
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -30,7 +31,8 @@ from loom.contracts import Provider, Validation
 from loom.gates import diff as diff_artifacts
 from loom.phases.base import PhaseOutcome, artifact_path
 from loom.pipeline import ARTIFACT_MODELS, inputs_for, make_phase, read_notes
-from loom.session import Session
+from loom.session import Session, runs_dir
+from loom.workspace import Workspace
 
 _SLOT = re.compile(r"\.replay-(\d+)\.json$")
 
@@ -151,3 +153,89 @@ def _idea_for(root: Path, run_id: str) -> str:
     if validation.is_file():
         return str(Validation.model_validate_json(validation.read_text(encoding="utf-8")).idea)
     return ""
+
+
+# --------------------------------------------------------------------------- /rewind (FR-SESS-08)
+
+
+class RewindResult(BaseModel):
+    """What `/rewind` reports after restoring the workspace and the build history."""
+
+    run_id: str
+    target: str
+    turn: int
+    sha: str
+    messages_kept: int
+    transcript_path: Path | None = None
+
+
+def _turn_number(label: str) -> int:
+    """The turn a snapshot label restores to. `scaffold` is turn 0 (before the first turn); a
+    non-turn label is -1 so it is filtered out of the rewind targets."""
+    if label == "scaffold":
+        return 0
+    m = re.fullmatch(r"turn-(\d+)", label)
+    return int(m.group(1)) if m else -1
+
+
+def rewind_targets(root: Path, run_id: str) -> list[str]:
+    """The snapshots `/rewind` can restore to, earliest first: `scaffold`, then `turn-1…N`. Only
+    the build phase takes per-turn snapshots, so a run that never built has none. `run_id` is
+    unused today — snapshot refs are per-repo, not per-run — but kept so a future per-run scoping
+    is a signature-compatible change."""
+    labels = [lbl for lbl in Workspace(Path(root)).snapshots() if _turn_number(lbl) >= 0]
+    return sorted(labels, key=_turn_number)
+
+
+def truncate_transcript(messages: list[dict[str, Any]], turn: int) -> list[dict[str, Any]]:
+    """The build transcript as it stood at the end of `turn` (1-based): everything up to, but not
+    including, the (turn+1)-th assistant message. Turn 0 keeps only the system+task priming. One
+    assistant message per turn is the agent loop's invariant (`agent/loop.py`), so counting them
+    is how a flat message list is cut at a turn boundary."""
+    if turn < 0:
+        return list(messages)
+    assistant_seen = 0
+    for i, message in enumerate(messages):
+        if message.get("role") == "assistant":
+            assistant_seen += 1
+            if assistant_seen == turn + 1:
+                return messages[:i]
+    return list(messages)
+
+
+def rewind(root: Path, run_id: str, target: str) -> RewindResult:
+    """FR-SESS-08 — restore the workspace tree and the build message history to `target`, an
+    earlier turn snapshot. Destructive by design: the point is to throw away what came after. The
+    turn refs stay reachable after a `reset --hard`, so a rewind is itself revertible."""
+    root = Path(root)
+    turn = _turn_number(target)
+    if turn < 0:
+        raise ValueError(f"{target!r} is not a turn snapshot; rewind targets are scaffold, turn-N")
+
+    # reset_to spares `.loom/`, so the transcript we are about to trim survives the tree reset.
+    sha = Workspace(root).reset_to(target)
+
+    kept = 0
+    trimmed_path: Path | None = None
+    path = runs_dir(root) / run_id / "transcript.json" if run_id else None
+    if path is not None and path.is_file():
+        try:
+            messages = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            messages = None
+        if isinstance(messages, list):
+            trimmed = truncate_transcript(messages, turn)
+            atomic_write(path, json.dumps(trimmed) + "\n")
+            kept, trimmed_path = len(trimmed), path
+
+    # ponytail: no `rewound` event. It is a user action on a paused run, not something the run
+    # did, and EVENT_KINDS is closed (a new kind is also an SRS §6 edit). Add one if `loom
+    # status` ever needs to show that a rewind happened.
+    return RewindResult(
+        run_id=run_id,
+        target=target,
+        turn=turn,
+        sha=sha,
+        messages_kept=kept,
+        transcript_path=trimmed_path,
+    )

@@ -114,6 +114,7 @@ def test_the_documented_vocabulary_is_the_implemented_one() -> None:
         "gate_decision",
         "graded",
         "retry",
+        "fallback_switch",
         "budget_warning",
         "compacted",
         "phase_finished",

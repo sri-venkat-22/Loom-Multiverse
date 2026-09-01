@@ -91,6 +91,8 @@ class ReplContext(Protocol):
     def start_run(self, start: str, stop: str, run_first: tuple[str, ...] = ()) -> None: ...
     def resume(self, run_id: str) -> None: ...
     def replay(self, phase: str) -> None: ...
+    def background(self, spec: str) -> None: ...
+    def rewind(self, target: str) -> None: ...
     def change_dir(self, path: Path) -> None: ...
     def add_dir(self, path: Path) -> None: ...
     def clear_session(self) -> None: ...
@@ -426,6 +428,42 @@ def _bug(ctx: ReplContext, args: str) -> None:
     ctx.write(ctx.write_bug_bundle())
 
 
+def _background(ctx: ReplContext, args: str) -> None:
+    """FR-SESS-07 — hand the run to a background thread and return the prompt. A bare `/background`
+    runs the whole pipeline; a phase name runs that phase. If one is already in flight, the
+    concrete context reports where it is rather than starting a second."""
+    ctx.background(args.strip())
+
+
+def _rewind(ctx: ReplContext, args: str) -> None:
+    """FR-SESS-08 — restore the workspace and the build history to an earlier turn snapshot. The
+    turns after the chosen one are dropped, so it refuses while a phase is running (registry)."""
+    from loom.replay import rewind_targets
+
+    targets = rewind_targets(ctx.root, ctx.run_id)
+    if not targets:
+        ctx.write("nothing to rewind to — /rewind needs a build's per-turn snapshots")
+        return
+    if args.strip():
+        target = args.strip().lower()
+        if target not in targets:
+            ctx.write(f"no snapshot {target!r} — one of {', '.join(targets)}")
+            return
+        ctx.rewind(target)
+        return
+    rows = [f"{t}  (before the first turn)" if t == "scaffold" else t for t in targets]
+    index = ctx.run_list(
+        "Rewind to which turn?",
+        "restores the workspace and history — the turns after it are dropped",
+        rows,
+        "Enter to rewind · Esc to cancel",
+    )
+    if index is None:
+        ctx.write("/rewind → cancelled")
+        return
+    ctx.rewind(targets[index])
+
+
 def _unimplemented(ctx: ReplContext, args: str) -> None:
     ctx.write("that command is not available in this build yet")
 
@@ -579,8 +617,8 @@ REGISTRY: list[Command] = [
         "advanced",
         "Run the current phase in the background",
         release="R1.1",
-        while_running="queue",
-        handler=_unimplemented,
+        while_running="immediate",  # reports the live run rather than queueing behind it
+        handler=_background,
     ),
     Command(
         "rewind",
@@ -588,7 +626,7 @@ REGISTRY: list[Command] = [
         "Rewind to an earlier turn",
         release="R1.1",
         while_running="refuse",
-        handler=_unimplemented,
+        handler=_rewind,
     ),
 ]
 

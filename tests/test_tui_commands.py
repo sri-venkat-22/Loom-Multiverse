@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+
 from loom.config import EFFORT_PRESETS, Config, load_config, project_config_path
 from loom.phases.base import artifact_path
 from loom.tui.commands import (
@@ -58,6 +60,8 @@ class StubContext:
     started: tuple | None = None
     resumed: str | None = None
     replayed: str | None = None
+    backgrounded: str | None = None
+    rewound: str | None = None
     changed_dir: Path | None = None
     added_dir: Path | None = None
     cleared: bool = False
@@ -108,6 +112,12 @@ class StubContext:
 
     def replay(self, phase: str) -> None:
         self.replayed = phase
+
+    def background(self, spec: str) -> None:
+        self.backgrounded = spec
+
+    def rewind(self, target: str) -> None:
+        self.rewound = target
 
     def change_dir(self, path: Path) -> None:
         self.changed_dir = path
@@ -324,6 +334,85 @@ def test_while_running_runs_an_immediate_command(tmp_path: Path) -> None:
 def test_registry_entries_are_frozen() -> None:
     # A guard that the declaration stays data — a handler cannot be swapped at runtime.
     assert isinstance(REGISTRY[0], Command)
+
+
+# --------------------------------------------------------------------------- WP-8.5: /background
+
+
+def test_background_hands_the_spec_to_the_context(tmp_path: Path) -> None:
+    # FR-SESS-07 — the handler decides nothing about threads; it forwards the spec.
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/background build")
+    assert ctx.backgrounded == "build"
+
+
+def test_background_bare_is_the_whole_run(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/background")
+    assert ctx.backgrounded == ""  # empty spec → the concrete context runs the whole pipeline
+
+
+def test_background_reports_rather_than_queueing_while_running(tmp_path: Path) -> None:
+    # FR-SLASH-09 — /background is `immediate`, so it acts (reports the live run) instead of the
+    # generic "queued — applies from the next phase".
+    ctx = _ctx(tmp_path, state="running")
+    dispatch(ctx, "/background")
+    assert ctx.backgrounded == ""
+    assert not any("queued" in w for w in ctx.writes)
+
+
+# --------------------------------------------------------------------------- WP-8.5: /rewind
+
+
+def test_rewind_with_no_snapshots_says_so(tmp_path: Path) -> None:
+    # FR-SESS-08 — a project that never built has no per-turn snapshots to rewind to.
+    ctx = _ctx(tmp_path)  # a .loom dir but no git repo → no snapshots
+    dispatch(ctx, "/rewind")
+    assert "nothing to rewind to" in ctx.last
+    assert ctx.rewound is None
+
+
+@pytest.mark.slow
+def test_rewind_typed_target_calls_rewind(tmp_path: Path) -> None:
+    from loom.workspace import Workspace
+
+    ws = Workspace.create(tmp_path)
+    ws.snapshot("turn-1")
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/rewind turn-1")
+    assert ctx.rewound == "turn-1"
+
+
+@pytest.mark.slow
+def test_rewind_typed_unknown_target_is_refused(tmp_path: Path) -> None:
+    from loom.workspace import Workspace
+
+    ws = Workspace.create(tmp_path)
+    ws.snapshot("turn-1")
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/rewind turn-9")
+    assert "no snapshot 'turn-9'" in ctx.last
+    assert ctx.rewound is None
+
+
+@pytest.mark.slow
+def test_rewind_picker_selects_a_target(tmp_path: Path) -> None:
+    from loom.workspace import Workspace
+
+    ws = Workspace.create(tmp_path)
+    ws.snapshot("turn-1")
+    ws.snapshot("turn-2")
+    ctx = _ctx(tmp_path, list_pick=1)  # second row = turn-2 (targets are earliest-first)
+    dispatch(ctx, "/rewind")
+    assert ctx.rewound == "turn-2"
+
+
+def test_rewind_refuses_while_a_phase_runs(tmp_path: Path) -> None:
+    # A destructive restore mid-run would fight the running phase for the workspace.
+    ctx = _ctx(tmp_path, state="running")
+    dispatch(ctx, "/rewind turn-1")
+    assert ctx.rewound is None
+    assert "can't run while a phase is working" in ctx.last
 
 
 # --------------------------------------------------------------------------- the wired handlers

@@ -10,9 +10,11 @@ recorded rather than lost. Accounts, teams, billing, dashboards, notifications, 
 and a mobile app are non-goals by default; move one into `v0_features` only if the product is
 meaningless without it.
 
-Aim for three to five `v0_features`. Each one is a capability, phrased as something a user can
-do — "shorten a URL and get a code back", not "URL module". If you find yourself writing a
-sixth, the sixth is a non-goal.
+Aim for three to five `v0_features`. Each one is a capability **of the idea above**, phrased as
+something a user can do — a verb and its object, not a module name. (For a link shortener that
+would read "shorten a URL and get a code back", not "URL module" — your features are about the
+product you were given, never that example.) If you find yourself writing a sixth, the sixth is a
+non-goal.
 
 ## The rest
 

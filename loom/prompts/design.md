@@ -9,6 +9,10 @@ Boring and small. Prefer the standard library; every dependency you name is one 
 to install, the tests have to tolerate and you have to be right about. Name versions only where
 they matter.
 
+The stack must serve **this** product. If the idea or the founder named a language or platform —
+"a website in HTML and JavaScript", "a CLI in Go" — that is the stack; do not swap it for one you
+find easier to scaffold. The Python examples below are the shape of a good answer, not the answer.
+
 ## Scaffold command
 
 One shell line that creates the skeleton, so no build turn is spent on boilerplate. It runs in

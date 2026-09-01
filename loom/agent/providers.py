@@ -17,7 +17,6 @@ Three of the four bugs in the blueprint addendum's sample loop are fixed here ra
 
 from __future__ import annotations
 
-import asyncio
 import os
 import random
 import re
@@ -54,6 +53,18 @@ MESSAGE_KEYS = ("role", "content", "tool_calls", "tool_call_id", "name")
 #: no marker; OpenAI-compatible endpoints ignore one.
 CACHE_CONTROL_PREFIXES = ("anthropic/", "claude-", "bedrock/anthropic")
 
+#: A single completion is bounded so no turn can run away. Without this a poorly-aligned model on
+#: an OpenAI-compatible endpoint keeps generating past its own turn — inventing the next `### User:`
+#: turn and drifting into unrelated text — because nothing on the wire told it to stop. Generous
+#: enough for a phase's whole JSON artifact or one file written through a tool-call argument.
+MAX_OUTPUT_TOKENS = 16384
+
+#: Conversation-boundary markers a served chat template leaks when a weak model continues past its
+#: own turn. Stopping here cuts the model the instant it starts writing the other side of the
+#: conversation. Safe against real output: a JSON artifact or a source file never opens a line with
+#: one of these role headers.
+STOP_SEQUENCES = ("\n### User:", "\n### Assistant:", "\n### Human:")
+
 #: Fires once per model per process, so a fallback price is visible but not noisy.
 _PRICED_BY_FALLBACK: set[str] = set()
 
@@ -64,6 +75,16 @@ _COST_FN_RESOLVED = False
 
 class ProviderError(RuntimeError):
     """A provider call that could not be completed after retries."""
+
+
+class _StreamCommitted(Exception):
+    """Internal signal, never seen outside this module: a stream failed *after* a delta was
+    already forwarded to `on_token`. Its existence tells `_run` that falling over to another
+    provider would print a second answer on top of the first, so the turn must fail with the
+    original error instead."""
+
+    def __init__(self, original: Exception) -> None:
+        self.original = original
 
 
 class ProviderQuotaError(ProviderError):
@@ -350,14 +371,20 @@ class LiteLLMProvider:
         max_retries: int = 4,
         base_delay: float = 0.5,
         temperature: float | None = None,
+        max_tokens: int = MAX_OUTPUT_TOKENS,
+        stop: Sequence[str] | None = None,
         acompletion: Callable[..., Any] | None = None,
         sleep: Callable[[float], Any] | None = None,
         jitter: Callable[[float, float], float] | None = None,
         extra: Mapping[str, Any] | None = None,
         on_token: Callable[[str], None] | None = None,
         chunk_builder: Callable[..., Any] | None = None,
+        fallback_models: Sequence[str] | None = None,
     ) -> None:
         self.model = model
+        # FR-AGENT-08 — models to try, in order, when the one before is down. Empty by default,
+        # so the chain is one link long and a run with no fallbacks behaves exactly as before.
+        self.fallback_models = list(fallback_models or [])
         self.price_table = dict(price_table or DEFAULT_PRICE_TABLE)
         self.ledger = ledger
         self.phase = phase
@@ -366,12 +393,19 @@ class LiteLLMProvider:
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.stop = list(stop) if stop is not None else list(STOP_SEQUENCES)
         self._acompletion = acompletion
         # FR-REPL-05 — when set, `complete()` streams and forwards each text delta here as it
         # arrives. Left None everywhere except an interactive TTY run, so nothing else changes.
         self.on_token = on_token
         self._chunk_builder = chunk_builder
-        self._sleep = sleep or asyncio.sleep
+        if sleep is not None:
+            self._sleep = sleep
+        else:
+            import asyncio
+
+            self._sleep = asyncio.sleep
         # Injected so a test can assert the *growth* exactly instead of asserting across two
         # overlapping random bands, which is a flake waiting for a bad CI day.
         self._jitter = jitter or random.uniform
@@ -383,28 +417,30 @@ class LiteLLMProvider:
         tools: list[dict[str, Any]] | None = None,
     ) -> Response:
         payload = self._apply_cache_control(normalise_messages(messages))
-        kwargs: dict[str, Any] = {"model": self.model, "messages": payload}
+        base_kwargs: dict[str, Any] = {"messages": payload}
         if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            base_kwargs["tools"] = tools
+            base_kwargs["tool_choice"] = "auto"
         if self.temperature is not None:
-            kwargs["temperature"] = self.temperature
-        kwargs.update(self.extra)
+            base_kwargs["temperature"] = self.temperature
+        # The turn bound, set before `extra` so a caller can still override either explicitly.
+        base_kwargs["max_tokens"] = self.max_tokens
+        if self.stop:
+            base_kwargs["stop"] = self.stop
+        base_kwargs.update(self.extra)
 
         started = time.perf_counter()
-        if self.on_token is not None:
-            raw = await self._stream(kwargs)
-        else:
-            raw = await self._call_with_retries(kwargs)
+        single = self._stream if self.on_token is not None else self._call_with_retries
+        raw, used_model = await self._run(base_kwargs, single)
         seconds = time.perf_counter() - started
 
         response = to_response(
-            raw, model=self.model, price_table=self.price_table, on_event=self.on_event
+            raw, model=used_model, price_table=self.price_table, on_event=self.on_event
         )
         if self.ledger is not None:
             self.ledger.record(
                 phase=self.phase,
-                model=self.model,
+                model=used_model,
                 usd=response.usd_cost,
                 in_tok=response.in_tokens,
                 out_tok=response.out_tokens,
@@ -413,23 +449,58 @@ class LiteLLMProvider:
             )
         return response
 
-    def _preflight(self) -> None:
-        """Refuse before the wire when the key this model needs is simply not set.
+    async def _run(
+        self,
+        base_kwargs: dict[str, Any],
+        single: Callable[[dict[str, Any]], Any],
+    ) -> tuple[Any, str]:
+        """FR-AGENT-08 — walk the model chain (primary, then `fallback_models`), moving to the
+        next only when a provider is down, and return the raw payload with the model that answered.
+
+        Streaming carries one extra rule, enforced by `_stream` raising `_StreamCommitted`: a
+        stream that fails *after* a delta reached the screen cannot fall over — a second provider
+        would print a second answer on top of the first — so that case fails the turn with the
+        original error. A pre-first-delta drop, the overload the fallback exists for, moves on.
+        """
+        chain = [self.model, *self.fallback_models]
+        for i, model in enumerate(chain):
+            try:
+                raw = await single({**base_kwargs, "model": model})
+                return raw, model
+            except _StreamCommitted as committed:
+                raise committed.original from None
+            except Exception as exc:  # noqa: BLE001 - re-raised on the last link
+                if i == len(chain) - 1:
+                    raise
+                if self.on_event is not None:
+                    self.on_event(
+                        "fallback_switch",
+                        from_model=model,
+                        to_model=chain[i + 1],
+                        reason=f"{type(exc).__name__}: {exc}",
+                    )
+        raise ProviderError("empty model chain")  # unreachable: chain always has the primary
+
+    def _preflight(self, model: str) -> None:
+        """Refuse before the wire when the key `model` needs is simply not set.
 
         Not redundant with the 401 path. Providers disagree about what a *missing* credential
         is — NVIDIA NIM reports it as a 500, which is in `RETRY_STATUS`, so without this it
         would back off four times before failing for a reason no amount of waiting fixes. A
         key that is present but wrong still goes the 401 route.
 
+        Keyed on the model being attempted, not `self.model`: a fallback link may need a
+        different key than the primary, and must be checked against its own.
+
         Only on the real path: an injected `acompletion` is a test or a cassette, and neither
         needs a key.
         """
         if self._acompletion is not None:
             return
-        variable = key_variable_for(self.model)
+        variable = key_variable_for(model)
         if variable and not os.environ.get(variable):
             raise ProviderAuthError(
-                f"no usable credentials for {self.model}.\n"
+                f"no usable credentials for {model}.\n"
                 f"Set {variable} in your environment, or put it in ~/.loom/credentials.json "
                 f'(mode 0600):\n  {{"{variable}": "..."}}'
             )
@@ -439,26 +510,36 @@ class LiteLLMProvider:
         reassemble the whole response so cost, tokens and tool calls flow through `to_response`
         exactly as the non-streaming path does.
 
-        ponytail: no retry wrapper here. Streaming establishes the connection lazily on the first
-        chunk, and re-driving a half-consumed stream is not a retry — it is a second answer. A
-        transient failure mid-stream fails the turn, which the loop already handles. The upgrade,
-        if it ever matters, is to retry only before the first delta.
+        No retry of a half-consumed stream: re-driving one is a second answer, not a retry. But a
+        drop *before the first delta* has shown nothing, so `_run` is free to fall over to the
+        next provider — the overload this exists for is exactly that case. Once a delta is on
+        screen we are committed: a later failure raises `_StreamCommitted` so `_run` fails the
+        turn with the original error rather than printing a second answer over the first.
         """
-        self._preflight()
+        model = kwargs["model"]
+        self._preflight(model)
         call = self._acompletion or _litellm_acompletion()
         build = self._chunk_builder or _litellm_stream_chunk_builder()
-        stream = await call(**{**kwargs, "stream": True})
-        chunks: list[Any] = []
-        async for chunk in stream:
-            chunks.append(chunk)
-            delta = _delta_text(chunk)
-            if delta and self.on_token is not None:
-                self.on_token(delta)
-        return build(chunks, messages=kwargs["messages"])
+        emitted = False
+        try:
+            stream = await call(**{**kwargs, "stream": True})
+            chunks: list[Any] = []
+            async for chunk in stream:
+                chunks.append(chunk)
+                delta = _delta_text(chunk)
+                if delta and self.on_token is not None:
+                    emitted = True  # past the point of no return — nothing can un-print this
+                    self.on_token(delta)
+            return build(chunks, messages=kwargs["messages"])
+        except Exception as exc:  # noqa: BLE001 - re-raised, possibly wrapped, below
+            if emitted:
+                raise _StreamCommitted(exc) from exc
+            raise
 
     async def _call_with_retries(self, kwargs: dict[str, Any]) -> Any:
         """FR-AGENT-08 — jittered exponential backoff, bounded, one event per retry."""
-        self._preflight()
+        model = kwargs["model"]
+        self._preflight(model)
         call = self._acompletion or _litellm_acompletion()
         last: Exception | None = None
         for attempt in range(self.max_retries):
@@ -466,11 +547,11 @@ class LiteLLMProvider:
                 return await call(**kwargs)
             except Exception as exc:  # noqa: BLE001 - re-raised below unless it is retryable
                 if _is_daily_quota(exc):
-                    raise _quota_error(self.model, exc) from exc
+                    raise _quota_error(model, exc) from exc
                 if _is_auth(exc):
                     # Never retried: four attempts at a key that is missing is four times the
                     # wait for the same answer.
-                    raise _auth_error(self.model, exc) from exc
+                    raise _auth_error(model, exc) from exc
                 if not _is_retryable(exc) or attempt == self.max_retries - 1:
                     raise
                 last = exc
@@ -478,14 +559,14 @@ class LiteLLMProvider:
                 if self.on_event is not None:
                     self.on_event(
                         "retry",
-                        model=self.model,
+                        model=model,
                         attempt=attempt + 1,
                         of=self.max_retries,
                         delay=round(delay, 3),
                         error=f"{type(exc).__name__}: {exc}",
                     )
                 await self._sleep(delay)
-        raise ProviderError(f"{self.model} failed after {self.max_retries} attempts") from last
+        raise ProviderError(f"{model} failed after {self.max_retries} attempts") from last
 
     def _apply_cache_control(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """FR-AGENT-09 — the prompt-cache breakpoint, owned here and nowhere else.

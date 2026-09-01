@@ -23,6 +23,7 @@ import difflib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -33,8 +34,9 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 Action = Literal["approve", "reject", "edit", "abandon"]
 
-#: What `$EDITOR` falls back to. `vi` is on every POSIX box this runs on (NFR-PORT-01).
-DEFAULT_EDITOR = "vi"
+#: What `$EDITOR` falls back to. The founder using this is not a sysadmin, so prefer `nano`
+#: (obvious ^X-to-quit footer) and fall back to `vi`, which is on every POSIX box (NFR-PORT-01).
+DEFAULT_EDITOR = "nano" if shutil.which("nano") else "vi"
 
 
 class Decision(BaseModel):

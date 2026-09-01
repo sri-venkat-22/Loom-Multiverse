@@ -8,13 +8,25 @@ action, so this module holds no business logic (SRS §2.5).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
 from typing import TextIO
 
+from loom.tui.anim import animating
 from loom.tui.banner import BannerState, render_banner
 
 #: What a plain Enter (or piped EOF) means at the initialise prompt: no.
 _YES = {"y", "yes"}
+
+
+def _reveal(lines: Sequence[str], out: TextIO, *, delay: float) -> None:
+    """Design §03 — stagger the header a line at a time so identity lands first and the eye ends
+    on the prompt. FR-ANIM-04: this only reorders *when* the same lines appear; the still prints
+    them at once, so a piped or dumb-terminal run loses nothing."""
+    for line in lines:
+        out.write(line + "\n")
+        out.flush()
+        time.sleep(delay)
 
 
 def start_session(
@@ -43,7 +55,14 @@ def start_session(
             out.write("not initialising — nothing was written.\n")
             return 0
 
-    out.write(render_banner(state) + "\n")
-    if is_tty and repl is not None:
+    # The live REPL renders the prompt, the rule and the mode hint itself (design §03), so the
+    # interactive banner is the header only; the still keeps the full frame.
+    live = is_tty and repl is not None
+    banner = render_banner(state, include_input=not live)
+    if live and animating(state.cap):
+        _reveal(banner.splitlines(), out, delay=1.0 / max(1, state.theme.max_fps))
+    else:
+        out.write(banner + "\n")
+    if live and repl is not None:  # `repl is not None` re-narrows for the type checker
         return repl(state)
     return 0

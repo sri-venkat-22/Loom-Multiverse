@@ -62,6 +62,49 @@ def _hex_rgb(value: str) -> tuple[int, int, int]:
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
+def _rgb_256(r: int, g: int, b: int) -> int:
+    """Nearest xterm-256 index for an RGB triple — the 6×6×6 colour cube, or the grey ramp when
+    the three channels match. Lets `paint` give an ansi256 terminal static colour, the same rung
+    `gradient_track` already serves there."""
+    if r == g == b:
+        if r < 8:
+            return 16
+        if r > 248:
+            return 231
+        return 232 + round((r - 8) / 247 * 24)
+    return 16 + 36 * round(r / 255 * 5) + 6 * round(g / 255 * 5) + round(b / 255 * 5)
+
+
+def paint(text: str, color: str, cap: Capability) -> str:
+    """Wrap `text` in `color` (a `#rrggbb`) for this capability: 24-bit on truecolor, the nearest
+    cube index on ansi256, and the bare text on the two quiet rungs (FR-ANIM-04). One SGR span, so
+    any substring of `text` survives intact — the banner's fields stay greppable."""
+    if not text or cap in ("no_color", "ascii"):
+        return text
+    r, g, b = _hex_rgb(color)
+    lead = f"\x1b[38;5;{_rgb_256(r, g, b)}m" if cap == "ansi256" else f"\x1b[38;2;{r};{g};{b}m"
+    return f"{lead}{text}{RESET}"
+
+
+def effort_color(theme: Theme, elapsed: float) -> str:
+    """The effort gradient's colour at this instant as `#rrggbb` — the Faster→Smarter sweep of
+    §12, sampled at `sweep_phase`. What a resting element pulses through."""
+    stops = [_hex_rgb(str(h)) for h in (theme.gradient.get("effort") or [])]
+    if not stops:
+        return str(theme.color.get("accent", "#cf9a4c"))
+    r, g, b = _sample(stops, sweep_phase(theme, elapsed))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def pulse_prompt(theme: Theme, *, elapsed: float, cap: Capability) -> str:
+    """The resting prompt glyph, coloured for `cap`. Animating terminals pulse it through the
+    effort gradient; the quiet-but-coloured rung shows a static accent; the plain rungs the bare
+    glyph. No trailing space — the caller owns the gap to the cursor."""
+    glyph = theme.glyph.get("prompt", ">")
+    color = effort_color(theme, elapsed) if animating(cap) else str(theme.color.get("accent", ""))
+    return paint(glyph, color, cap)
+
+
 def _lerp(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
     return tuple(round(x + (y - x) * t) for x, y in zip(a, b, strict=True))  # type: ignore[return-value]
 

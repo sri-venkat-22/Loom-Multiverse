@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from loom.tui.anim import Capability, gradient_track, paint
 from loom.tui.theme import Theme
 
 #: Frame width. SRS §3.2 draws the rule and right-aligns the run state to this column.
@@ -37,6 +38,7 @@ class BannerState:
     run_state: str
     mode: str
     theme: Theme
+    cap: Capability = "no_color"  # colour rung, resolved by the CLI; default renders plain
 
 
 def _context(tokens: int | None) -> str:
@@ -46,23 +48,46 @@ def _context(tokens: int | None) -> str:
     return f" ({size} context)"
 
 
-def render_banner(state: BannerState) -> str:
+def render_banner(state: BannerState, *, include_input: bool = True) -> str:
+    """The launch frame — SRS §3.2, design §03.
+
+    `include_input` draws the prompt line, the gradient rule and the mode hint below the header.
+    The still (a piped or non-TTY run) keeps it so the frame is complete; the interactive session
+    passes ``False`` and lets the live REPL own those three — its pulsing prompt is the real input
+    and its cursor is where typing lands, so drawing a second, static prompt here (the old banner)
+    is what put the cursor above the line you actually typed on.
+    """
     g = state.theme.glyph
     l0, l1, l2 = state.theme.logo
-    return "\n".join(
-        [
-            f"  {l0}   Loom v{state.version}",
-            f"  {l1}   {state.model}{_context(state.context_tokens)} with "
+
+    def p(text: str, color: str) -> str:
+        """Paint one whole segment — never mid-word, so every field stays greppable."""
+        return paint(text, str(state.theme.color[color]), state.cap)
+
+    lines = [
+        f"  {p(l0, 'accent')}   {p('Loom v' + state.version, 'fg')}",
+        f"  {p(l1, 'accent')}   "
+        + p(
+            f"{state.model}{_context(state.context_tokens)} with "
             f"{state.effort} effort · {state.billing} · {state.provider}",
-            f"  {l2}   {state.cwd}",
-            f"          key from {state.credential_source}",
-            "",
-            *(f"  {line}" for line in INVITATION.splitlines()),
-            "",
-            state.run_state.rjust(WIDTH),
-            f"{g['prompt']} {g['cursor']}",
-            "─" * WIDTH,
-            f"  {g['mode']} {state.mode} mode on (shift+tab to cycle) · "
-            "@ for files · ! for bash · # to remember",
+            "dim",
+        ),
+        f"  {p(l2, 'accent')}   {p(state.cwd, 'dim')}",
+        f"          {p('key from ' + state.credential_source, 'faint')}",
+        "",
+        *(f"  {p(line, 'fg')}" for line in INVITATION.splitlines()),
+        "",
+        p(state.run_state.rjust(WIDTH), "dim"),
+    ]
+    if include_input:
+        lines += [
+            f"{p(g['prompt'], 'accent')} {p(g['cursor'], 'accent')}",
+            gradient_track(state.theme, WIDTH, state.cap),
+            f"  {p(g['mode'], 'accent')} "
+            + p(
+                f"{state.mode} mode on (shift+tab to cycle) · "
+                "@ for files · ! for bash · # to remember",
+                "faint",
+            ),
         ]
-    )
+    return "\n".join(lines)

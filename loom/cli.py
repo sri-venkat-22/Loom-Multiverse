@@ -2,50 +2,38 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import subprocess
 import sys
 from collections.abc import Callable
 from enum import IntEnum
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 
 if TYPE_CHECKING:
+    from loom.config import Config
+    from loom.contracts import Provider
+    from loom.ledger import Ledger
+    from loom.pipeline import PipelineResult
+    from loom.session import Session
+    from loom.tui.banner import BannerState
     from loom.tui.commands import RunState
 
-from loom.agent.providers import (
-    LiteLLMProvider,
-    ProviderError,
-    ProviderQuotaError,
-    key_variable_for,
-)
-from loom.agent.tools.ask_user import AskUser
-from loom.blueprints.loader import load_blueprint
-from loom.cache import PhaseCache
-from loom.config import (
-    Config,
-    apply_credentials,
-    load_config,
-    project_config_path,
-    user_config_path,
-)
-from loom.contracts import Provider
-from loom.diagnostics import bug_bundle, format_report
-from loom.diagnostics import doctor as run_doctor
-from loom.gates import AutoApprove, TerminalGate
-from loom.ledger import Ledger
-from loom.pipeline import PHASES, PipelineResult, UnattendedWithoutBudget, run_pipeline
-from loom.replay import replay as replay_phase
-from loom.session import LOOM_DIR, Session, list_runs
-from loom.tui.app import start_session
-from loom.tui.banner import BannerState
-from loom.tui.theme import DEFAULT_THEME
-from loom.ui import TokenStream, event_sink
+LOOM_DIR = ".loom"
+PHASES = ("validate", "plan", "design", "build")
+
+
+def LiteLLMProvider(*args: Any, **kwargs: Any) -> Provider:
+    """Resolve the real provider only when a command is actually going to call it.
+
+    This callable seam also keeps the CLI tests' provider injection independent of import timing.
+    """
+    from loom.agent.providers import LiteLLMProvider as _LiteLLMProvider
+
+    return cast("Provider", _LiteLLMProvider(*args, **kwargs))
+
 
 app = typer.Typer(add_completion=False, help="Turn an idea into a working, tested codebase.")
 
@@ -123,6 +111,8 @@ def initialise(root: Path) -> tuple[bool, bool]:
         sub.mkdir(parents=True, exist_ok=True)
     # Loom's own state is never the user's to commit.
     (d / ".gitignore").write_text("*\n", encoding="utf-8")
+    from loom.ledger import Ledger
+
     Ledger(ledger_path(root))
 
     git_created = not _is_git_repo(root)
@@ -146,6 +136,10 @@ def init(path: Path = PathOpt) -> None:
 @app.command()
 def status(path: Path = PathOpt) -> None:
     """Print config in effect, the latest run, and spend to date."""
+    from loom.config import load_config, project_config_path, user_config_path
+    from loom.ledger import Ledger
+    from loom.session import Session, list_runs
+
     root = path.resolve()
     if not loom_dir(root).exists():
         typer.echo(f"not initialised — run `loom init -C {root}`")
@@ -196,6 +190,9 @@ _CONTEXT_TOKENS: dict[str, int] = {
 
 
 def _version() -> str:
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _pkg_version
+
     try:
         return _pkg_version("loom-cli")
     except PackageNotFoundError:  # pragma: no cover - only when running from an unbuilt tree
@@ -214,6 +211,8 @@ def _display_cwd(root: Path) -> str:
 
 def _credential_source(model: str, set_from_file: list[str]) -> str:
     """Where the provider key came from — never the key itself (FR-CLI-03)."""
+    from loom.agent.providers import key_variable_for
+
     var = key_variable_for(model)
     if not var:
         return "local model — no key needed"
@@ -225,6 +224,9 @@ def _credential_source(model: str, set_from_file: list[str]) -> str:
 
 
 def _run_state(root: Path) -> str:
+    from loom.ledger import Ledger
+    from loom.session import Session
+
     if not loom_dir(root).exists():
         return "no run in progress"
     session = Session.latest(root)
@@ -235,9 +237,15 @@ def _run_state(root: Path) -> str:
 
 
 def _banner_state(root: Path) -> BannerState:
+    from loom.config import apply_credentials, load_config
+    from loom.tui.anim import detect_capability
+    from loom.tui.banner import BannerState
+    from loom.tui.theme import DEFAULT_THEME
+
     config = load_config(cwd=root)
     set_from_file = apply_credentials()  # FR-CFG-06 — keys into env, so the source is knowable
     return BannerState(
+        cap=detect_capability(os.environ, is_tty=sys.stdout.isatty()),
         version=_version(),
         model=config.model.split("/")[-1].split(":")[0],
         context_tokens=_CONTEXT_TOKENS.get(config.model),
@@ -255,6 +263,8 @@ def _banner_state(root: Path) -> BannerState:
 @app.callback(invoke_without_command=True)
 def _default(ctx: typer.Context, path: Path = PathOpt) -> None:
     """`loom` with no subcommand starts the interactive session (FR-CLI-01)."""
+    from loom.tui.app import start_session
+
     if ctx.invoked_subcommand is not None:
         return
     root = path.resolve()
@@ -278,7 +288,17 @@ def _default(ctx: typer.Context, path: Path = PathOpt) -> None:
 def _repl_for(root: Path) -> Callable[[Any], int]:
     """Build the WP-8.2 REPL, wired to the pipeline the flags already reach (the `loom/tui/`
     invariant: every path it drives is also reachable non-interactively)."""
+    import asyncio
+
+    from loom.agent.providers import ProviderError
+    from loom.agent.tools.ask_user import AskUser
+    from loom.config import apply_credentials, load_config
+    from loom.ledger import Ledger
+    from loom.replay import replay as replay_phase
+    from loom.replay import rewind as rewind_run
+    from loom.session import Session
     from loom.tui.repl import ReplActions, make_repl
+    from loom.tui.theme import DEFAULT_THEME
 
     config = load_config(cwd=root)
 
@@ -323,6 +343,7 @@ def _repl_for(root: Path) -> Callable[[Any], int]:
             phase=phase,
             run_id=rid,
             on_event=session.log_event,
+            fallback_models=cfg.fallback_models,
         )
         try:
             result = asyncio.run(
@@ -342,11 +363,30 @@ def _repl_for(root: Path) -> Callable[[Any], int]:
             return
         typer.echo(result.diff)
 
+    def do_rewind(target: str) -> None:
+        """`/rewind` from the REPL (FR-SESS-08) — restore the latest run's workspace and build
+        history to an earlier turn snapshot, returning to the prompt."""
+        from loom.workspace import WorkspaceError
+
+        rid = _latest_run(root)
+        if rid is None:
+            typer.echo("no run to rewind")
+            return
+        try:
+            result = rewind_run(root, rid, target)
+        except (WorkspaceError, ValueError) as exc:
+            typer.echo(str(exc))
+            return
+        typer.echo(
+            f"rewound to {result.target} — workspace restored, {result.messages_kept} messages kept"
+        )
+
     actions = ReplActions(
         start_idea=lambda idea: run("validate", "build", idea, None),
         start_run=lambda s, st, _rf: run(s, st, "", _latest_run(root)),
         resume=lambda rid: run(_resume_start(root, rid), "build", "", rid),
         replay=do_replay,
+        rewind=do_rewind,
         run_state=lambda: _repl_run_state(root),
         cost_report=lambda: _cost_string(root),
         status_report=lambda: _status_string(root, load_config(cwd=root)),
@@ -358,6 +398,7 @@ def _repl_run_state(root: Path) -> RunState:
     """The between-prompts run state (FR-REPL-03). Synchronously the REPL only rests at `idle` or
     `finished`; `gate`/`running` are reached once a phase runs in the background (WP-8.5)."""
     from loom.phases.base import artifact_path
+    from loom.session import Session
 
     session = Session.latest(root)
     if session is None:
@@ -374,6 +415,8 @@ def _resume_start(root: Path, run_id: str) -> str:
 
 
 def _cost_string(root: Path) -> str:
+    from loom.ledger import Ledger
+
     ledger = Ledger(ledger_path(root))
     lines = [f"total: ${ledger.total():.4f}"]
     for phase, usd in ledger.by_phase().items():
@@ -419,6 +462,7 @@ def _providers(
             run_id=session.run_id,
             on_event=session.log_event,
             on_token=on_token,
+            fallback_models=config.fallback_models,
         )
 
     judge = LiteLLMProvider(config.judge_model, price_table=config.price_table)
@@ -444,6 +488,19 @@ def _run_phases(
     json_out: bool = False,
 ) -> PipelineResult:
     """Everything `loom run` and the four single-phase commands share."""
+    import asyncio
+
+    from loom.agent.providers import ProviderError, ProviderQuotaError
+    from loom.agent.tools.ask_user import AskUser
+    from loom.blueprints.loader import load_blueprint
+    from loom.cache import PhaseCache
+    from loom.config import apply_credentials, load_config
+    from loom.gates import AutoApprove, TerminalGate
+    from loom.ledger import Ledger
+    from loom.pipeline import UnattendedWithoutBudget, run_pipeline
+    from loom.session import Session
+    from loom.ui import TokenStream, event_sink
+
     root = path.resolve()
     if not loom_dir(root).exists():
         typer.echo(f"not initialised — run `loom init -C {root}`")
@@ -647,6 +704,8 @@ def _continue(phase: str, path: Path, run_id: str | None, **flags: Any) -> None:
 
 
 def _latest_run(root: Path) -> str | None:
+    from loom.session import list_runs
+
     runs = list_runs(root)
     return runs[-1] if runs else None
 
@@ -784,6 +843,15 @@ def replay(
     model: str = ModelOpt,
 ) -> None:
     """Re-run one phase against a run's cached artifacts, and diff the result."""
+    import asyncio
+
+    from loom.agent.providers import ProviderError, ProviderQuotaError
+    from loom.agent.tools.ask_user import AskUser
+    from loom.config import apply_credentials, load_config
+    from loom.ledger import Ledger
+    from loom.replay import replay as replay_phase
+    from loom.session import Session
+
     root = path.resolve()
     apply_credentials()
     config = load_config(cwd=root, flags={"model": model})
@@ -796,6 +864,7 @@ def replay(
         phase=phase,
         run_id=run_id,
         on_event=session.log_event,
+        fallback_models=config.fallback_models,
     )
     try:
         result = asyncio.run(
@@ -853,6 +922,8 @@ def cost(
     run_id: str = RunOpt,
 ) -> None:
     """Spend by phase and by model."""
+    from loom.ledger import Ledger
+
     root = path.resolve()
     ledger = Ledger(ledger_path(root))
     scope = run_id or None
@@ -867,6 +938,10 @@ def cost(
 @app.command()
 def doctor(path: Path = PathOpt) -> None:
     """Check Python, git, the provider key, reachability, workspace and disk (FR-DIAG-02)."""
+    from loom.config import apply_credentials
+    from loom.diagnostics import doctor as run_doctor
+    from loom.diagnostics import format_report
+
     root = path.resolve()
     apply_credentials()  # so the credential check sees keys from .env / credentials.json
     checks = run_doctor(root)
@@ -878,6 +953,9 @@ def doctor(path: Path = PathOpt) -> None:
 @app.command()
 def bug(path: Path = PathOpt) -> None:
     """Write a redacted diagnostic bundle to a file. Nothing is uploaded (FR-DIAG-03)."""
+    from loom.config import apply_credentials
+    from loom.diagnostics import bug_bundle
+
     root = path.resolve()
     apply_credentials()
     dest = bug_bundle(root)

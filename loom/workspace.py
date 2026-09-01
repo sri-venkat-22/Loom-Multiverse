@@ -148,6 +148,15 @@ class Workspace:
         self._require("update-ref", f"{SNAP_REF}/{label}", sha)
         return Snapshot(label, sha)
 
+    def snapshots(self) -> list[str]:
+        """Every turn snapshot label in this repo. `/rewind` (FR-SESS-08) reads these to offer
+        the turns it can restore to; enumeration only, the caller sorts into turn order."""
+        out = self._git("for-each-ref", "--format=%(refname)", SNAP_REF, check=False)
+        if not out:
+            return []
+        prefix = f"{SNAP_REF}/"
+        return [line[len(prefix) :] for line in out.splitlines() if line.startswith(prefix)]
+
     def resolve(self, label: str) -> str:
         """A label, a `base/<phase>` marker, or any revision git understands."""
         for candidate in (f"{SNAP_REF}/{label}", f"refs/loom/{label}", label):

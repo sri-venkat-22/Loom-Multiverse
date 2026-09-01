@@ -18,6 +18,8 @@ the whole thing is drivable from a test with no TTY.
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -26,6 +28,7 @@ from pathlib import Path
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
+from prompt_toolkit.formatted_text import ANSI, AnyFormattedText
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings
@@ -35,8 +38,11 @@ from prompt_toolkit.output import Output
 from loom import diagnostics
 from loom.agent.tools.bash import DEFAULT_TIMEOUT, MAX_OUTPUT_CHARS, _run
 from loom.config import Config, load_config, set_project_config_value
+from loom.pipeline import PHASES
 from loom.security import CommandDenied, check_command
 from loom.session import LOOM_DIR, append_note, list_runs
+from loom.tui.anim import animating, detect_capability, pulse_prompt
+from loom.tui.background import BackgroundRun
 from loom.tui.commands import RunState, dispatch
 from loom.tui.complete import PathCompleter, SlashCompleter
 from loom.tui.theme import DEFAULT_THEME, Theme
@@ -111,6 +117,17 @@ def route_free_text(state: RunState, text: str, *, gate_phase: str = "the curren
     )
 
 
+def _background_span(spec: str) -> tuple[str | None, str]:
+    """What `/background [phase]` runs. Bare (or `run`) is the whole pipeline; a phase name runs
+    that phase alone. An unknown name returns `(None, "")` so the caller can print usage."""
+    spec = spec.strip().lower()
+    if not spec or spec == "run":
+        return PHASES[0], PHASES[-1]
+    if spec in PHASES:
+        return spec, spec
+    return None, ""
+
+
 def run_bash_line(
     root: Path, command: str, *, env: dict[str, str] | None = None, timeout: float = DEFAULT_TIMEOUT
 ) -> str:
@@ -145,6 +162,7 @@ class ReplActions:
     start_run: Callable[[str, str, tuple[str, ...]], None] = _noop
     resume: Callable[[str], None] = _noop
     replay: Callable[[str], None] = _noop
+    rewind: Callable[[str], None] = _noop
     run_state: Callable[[], RunState] = lambda: "idle"
     gate_phase: Callable[[], str] = lambda: "the current"
     cost_report: Callable[[], str] = lambda: "no spend recorded"
@@ -196,11 +214,16 @@ class Repl:
         self._extra_dirs: list[Path] = []  # /add-dir, for the session (FR-SEC-03)
         self._widget_input: Input | None = None
         self._widget_output: Output | None = None
+        self._bg: BackgroundRun | None = None  # /background (FR-SESS-07)
 
     # --------------------------------------------------------------- ReplContext surface
 
     @property
     def state(self) -> RunState:
+        # A live background run is the only way the synchronous REPL rests in `running`; it makes
+        # `while_running="refuse"` commands refuse, which is what keeps two runs off one workspace.
+        if self._bg is not None and self._bg.alive:
+            return "running"
         return self.actions.run_state()
 
     def write(self, text: str) -> None:
@@ -270,6 +293,25 @@ class Repl:
 
     def replay(self, phase: str) -> None:
         self.actions.replay(phase)
+
+    def background(self, spec: str) -> None:
+        """FR-SESS-07 — start the run in a daemon thread and hand the prompt straight back. A run
+        already in flight is reported (its events are what `loom status` reads), never doubled."""
+        if self._bg is not None and self._bg.alive:
+            self.write(f"a {self._bg.label} run is already in the background — /status to watch")
+            return
+        start, stop = _background_span(spec)
+        if start is None:
+            self.write(f"/background [phase] — one of {', '.join(PHASES)}, or bare for the run")
+            return
+        self._bg = BackgroundRun(stop, lambda: self.actions.start_run(start, stop, ()))
+        self._bg.start()
+        self.write(
+            f"/background → {start}→{stop} in the background · /status to watch, /cost for spend"
+        )
+
+    def rewind(self, target: str) -> None:
+        self.actions.rewind(target)
 
     def change_dir(self, path: Path) -> None:
         """Re-root the session (FR-SEC-03). Every REPL command reads `self.root`, so `/status`,
@@ -348,7 +390,7 @@ class Repl:
         shows at once."""
         g = self.theme.glyph
         return (
-            f"  {g['mode']} {self.mode} mode (shift+tab to cycle) · "
+            f"  {g['mode']} {self.mode} mode on (shift+tab to cycle) · "
             "@ for files · ! for bash · # to remember"
         )
 
@@ -387,13 +429,28 @@ class Repl:
         0, and two Ctrl+C within two seconds exit 5 (FR-KEY-04). `state` is the banner state
         `start_session` hands in; the loop does not need its fields, only its presence."""
         self._widget_input, self._widget_output = input, output
+        # FR-ANIM-03/04 — the resting prompt pulses through the effort gradient on an animating
+        # TTY, and is a plain glyph when piped or on a dumb terminal. Injected I/O (a test) is
+        # never a TTY, so the animation and its repaint clock stay off there.
+        cap = detect_capability(os.environ, is_tty=input is None and sys.stdout.isatty())
+        message: AnyFormattedText
+        refresh = 0.0  # prompt_toolkit reads a falsy interval as "no auto-repaint"
+        if animating(cap):
+            start = time.monotonic()
+            message = lambda: ANSI(  # noqa: E731 - a redraw callback, not a stored function
+                pulse_prompt(self.theme, elapsed=time.monotonic() - start, cap=cap) + " "
+            )
+            refresh = 1.0 / max(1, self.theme.max_fps)
+        else:
+            message = f"{self.theme.glyph['prompt']} "
         session: PromptSession[str] = PromptSession(
-            message=f"{self.theme.glyph['prompt']} ",
+            message=message,
             completer=_ReplCompleter(self.root),
             history=self._history(),
             key_bindings=self._bindings(),
             bottom_toolbar=self._hint,
             complete_while_typing=True,
+            refresh_interval=refresh,
             input=input,
             output=output,
         )

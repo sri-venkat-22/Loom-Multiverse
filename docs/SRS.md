@@ -1230,13 +1230,13 @@ the code wins and this section is the bug.
 `ts` (ISO-8601 UTC) · `run_id` · `seq` (monotonic) · `kind` · plus kind-specific fields.
 Event kinds: `run_started`, `phase_started`, `turn`, `tool_call`, `tool_result`, `ask_user`,
 `user_answer`, `artifact_written`, `gate_opened`, `gate_decision`, `graded`, `retry`,
-`budget_warning`, `compacted`, `phase_finished`, `interrupted`, `run_finished`.
+`fallback_switch`, `budget_warning`, `compacted`, `phase_finished`, `interrupted`, `run_finished`.
 
 **Ledger row** (`spend` table): `id`, `ts`, `run_id`, `phase`, `model`, `in_tok`, `out_tok`,
 `usd`, `seconds`.
 
-**Config keys**: `model`, `judge_model`, `max_turns`, `max_usd`, `budget_usd`, plus (new, this SRS)
-`effort`, `mode`, `theme`, `blueprint`, `price_table`. Unknown keys are refused.
+**Config keys**: `model`, `fallback_models`, `judge_model`, `max_turns`, `max_usd`, `budget_usd`,
+plus (new, this SRS) `effort`, `mode`, `theme`, `blueprint`, `price_table`. Unknown keys are refused.
 
 ---
 

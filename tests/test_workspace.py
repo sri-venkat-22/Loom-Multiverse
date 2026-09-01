@@ -127,6 +127,16 @@ def test_resolving_an_unknown_label_says_so(ws: Workspace) -> None:
         ws.reset_to("turn-99")
 
 
+def test_snapshots_lists_the_turn_labels(ws: Workspace) -> None:
+    """WP-8.5 — `/rewind` reads this to offer the turns it can restore to. Phase bases live under
+    a different ref and must not leak in."""
+    assert ws.snapshots() == []
+    ws.snapshot("scaffold")
+    ws.snapshot("turn-1")
+    ws.begin_phase("build")  # refs/loom/base/build — not a snapshot
+    assert set(ws.snapshots()) == {"scaffold", "turn-1"}
+
+
 # --------------------------------------------------------------------------- reset_to
 
 

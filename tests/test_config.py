@@ -228,6 +228,7 @@ def test_the_srs_config_key_set_is_exactly_the_model_fields() -> None:
     """SRS §6 — the documented key list and the code must not drift."""
     assert set(Config.model_fields) == {
         "model",
+        "fallback_models",
         "judge_model",
         "max_turns",
         "max_usd",

@@ -15,8 +15,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from loom.security import read_credentials
-
 CONFIG_NAME = "config.toml"
 CREDENTIALS_NAME = "credentials.json"
 ENV_PREFIX = "LOOM_"
@@ -98,6 +96,10 @@ class Config(BaseModel):
     # Defaults below match DEFAULT_EFFORT's preset; the validator re-derives them whenever the
     # effort differs and the key was not set explicitly at any layer.
     model: str = MODEL_TIERS["cheap"]
+
+    # FR-AGENT-08 — models to fall over to, in order, when `model` is down. End the chain with a
+    # local `ollama/...` model to keep working with every remote provider unreachable.
+    fallback_models: list[str] = Field(default_factory=list)
     max_turns: int = Field(default=25, gt=0)
     max_usd: float = Field(default=1.00, gt=0)
     rubric_rounds: int = Field(default=2, gt=0)
@@ -173,6 +175,8 @@ def apply_credentials(
     never silently replaced by a stale one in a file. Returns the names it set, for `loom doctor`.
     Raises on a group-readable credentials file rather than using it — `read_credentials` explains.
     """
+    from loom.security import read_credentials
+
     env = os.environ if env is None else env
     home = Path(home) if home is not None else Path.home()
     set_now = []

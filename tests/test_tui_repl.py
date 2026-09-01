@@ -10,6 +10,8 @@ FR-REPL-09 (`!` through the agent's guard), FR-REPL-10 (`#` notes reach the phas
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -244,3 +246,56 @@ def test_ctrl_d_exits_zero(tmp_path: Path) -> None:
     with create_pipe_input() as pin:
         pin.send_text("\x04")
         assert repl.run(None, input=pin, output=DummyOutput()) == 0
+
+
+# --------------------------------------------------------------------------- WP-8.5: /background
+
+
+def test_background_starts_a_thread_and_flips_state_to_running(tmp_path: Path) -> None:
+    """FR-SESS-07 — the prompt returns while the run works, and a live run reads as `running` so
+    the FR-SLASH-09 gating keeps a second run off the same workspace."""
+    release, started = threading.Event(), threading.Event()
+    calls: list[tuple] = []
+
+    def fake_start_run(start: str, stop: str, run_first: tuple) -> None:
+        calls.append((start, stop, run_first))
+        started.set()
+        release.wait(2.0)
+
+    repl, _ = _repl(tmp_path, start_run=fake_start_run, run_state=lambda: "idle")
+    assert repl.state == "idle"
+
+    repl.handle("/background build")
+    assert started.wait(2.0), "the background run never started"
+    assert repl.state == "running"
+    assert calls == [("build", "build", ())]
+
+    release.set()
+    deadline = time.monotonic() + 2.0
+    while repl.state == "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert repl.state == "idle"  # thread done → state falls back to the injected run_state
+
+
+def test_background_reports_a_run_already_in_flight(tmp_path: Path) -> None:
+    release, started = threading.Event(), threading.Event()
+
+    def fake_start_run(start: str, stop: str, run_first: tuple) -> None:
+        started.set()
+        release.wait(2.0)
+
+    repl, writes = _repl(tmp_path, start_run=fake_start_run)
+    repl.handle("/background")  # bare → the whole pipeline
+    assert started.wait(2.0)
+    writes.clear()
+
+    repl.handle("/background")  # a second one while the first is alive
+    assert any("already in the background" in w for w in writes)
+    release.set()
+
+
+def test_background_rejects_an_unknown_phase(tmp_path: Path) -> None:
+    repl, writes = _repl(tmp_path)
+    repl.handle("/background nonsense")
+    assert any("one of" in w for w in writes)
+    assert repl._bg is None
