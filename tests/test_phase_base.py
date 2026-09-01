@@ -252,6 +252,51 @@ async def test_a_repair_is_charged_for(tmp_path: Path) -> None:
     assert outcome.usd_spent == pytest.approx(0.002)
 
 
+def _ask() -> Response:
+    """A turn that only calls a tool: it consumes a turn and says nothing final."""
+    return Response(
+        text="",
+        tool_calls=[ToolCall(id="c", name="ask_user", arguments={"question": "?"})],
+        usd_cost=0.001,
+    )
+
+
+async def test_turn_exhaustion_with_money_to_spare_is_salvaged(tmp_path: Path) -> None:
+    """A phase that spends every turn on tools and never concludes is not a dead loss: with money
+    left, one tool-free call turns the research into the artifact it was for. Regression for
+    WP-4.7, where Validate burned all 20 turns on search/fetch and the run died 'invalid' with an
+    empty final reply."""
+    fake = FakeLLM([_ask(), _ask(), VALID])
+    outcome = await NotePhase().execute(
+        provider=fake,
+        inputs={"subject": "x"},
+        root=tmp_path,
+        max_turns=2,  # both consumed by tool calls → the loop exits budget_exhausted (on turns)
+        max_usd=1.0,  # ... but with money to spare, so the salvage call is allowed
+        ask_user_fn=lambda **_: "ok",
+    )
+    assert outcome.artifact.title == "a note"
+    assert fake.call_count == 3  # two research turns + one salvage
+    assert fake.tools_seen[-1] is None  # the salvage call is tool-free, forcing a final answer
+
+
+async def test_running_out_of_money_still_buys_no_repair(tmp_path: Path) -> None:
+    """The other side of the same branch: when the *money* ran out (not the turns), FR-AGENT-02
+    still forbids another call — a repair past the ceiling is what it exists to stop."""
+    fake = FakeLLM([_ask()])
+    with pytest.raises(PhaseError) as caught:
+        await NotePhase().execute(
+            provider=fake,
+            inputs={"subject": "x"},
+            root=tmp_path,
+            max_turns=8,  # turns to spare ...
+            max_usd=0.001,  # ... but the one call spends the whole ceiling
+            ask_user_fn=lambda **_: "ok",
+        )
+    assert fake.call_count == 1  # no salvage call was bought
+    assert "USD ceiling" in str(caught.value)
+
+
 async def test_reviewer_feedback_reaches_the_task_not_the_transcript(tmp_path: Path) -> None:
     """FR-GATE-02 — a rejected phase re-runs with the feedback in its input, and without its
     own rejected artifact to anchor on."""

@@ -7,9 +7,19 @@ promised properties — last 12 turns verbatim, older tool outputs summarized, i
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
-from loom.agent.context import ELIDED, GIST_CHARS, KEEP_TURNS, compact
+from loom.agent.context import (
+    ELIDED,
+    GIST_CHARS,
+    KEEP_TURNS,
+    compact,
+    compact_run,
+    compaction_report,
+    transcript_chars,
+)
 
 
 def _assistant_call(turn: int) -> dict[str, Any]:
@@ -132,3 +142,46 @@ def test_user_feedback_between_turns_keeps_its_group() -> None:
     out = compact(messages)
     assert {"role": "user", "content": "rubric says 0.4 — the tests do not pass"} in out
     assert _call_ids(out) == _result_ids(out)
+
+
+# --------------------------------------------------------------------------- FR-SESS-06 report
+
+
+def test_compaction_report_counts_the_tokens_reclaimed() -> None:
+    """The `/compact` and auto-compaction shared helper: a big transcript reports a real saving,
+    and the compacted transcript is smaller and still paired."""
+    out, reclaimed, line = compaction_report(_transcript(30))
+    assert reclaimed > 0
+    assert transcript_chars(out) < transcript_chars(_transcript(30))
+    assert "reclaimed" in line and "tokens" in line
+    assert _call_ids(out) == _result_ids(out)
+
+
+def test_compaction_report_says_so_when_there_is_nothing_to_reclaim() -> None:
+    _out, reclaimed, line = compaction_report(_transcript(KEEP_TURNS))
+    assert reclaimed == 0
+    assert "nothing to compact" in line
+
+
+def _write_transcript(root: Path, run_id: str, messages: list[dict[str, Any]]) -> Path:
+    path = root / ".loom" / "runs" / run_id / "transcript.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(messages), encoding="utf-8")
+    return path
+
+
+def test_compact_run_shrinks_the_persisted_transcript_on_demand(tmp_path: Path) -> None:
+    """FR-SESS-06 — /compact compacts the run's transcript in place and reports the reclaim."""
+    path = _write_transcript(tmp_path, "r", _transcript(30))
+    before = path.stat().st_size
+    report = compact_run(tmp_path, "r")
+    assert "reclaimed" in report
+    assert path.stat().st_size < before
+    # And the rewritten file is a well-formed, still-paired transcript (no orphaned tool result).
+    rewritten = json.loads(path.read_text(encoding="utf-8"))
+    assert _call_ids(rewritten) == _result_ids(rewritten)
+
+
+def test_compact_run_without_a_transcript_is_a_message_not_a_crash(tmp_path: Path) -> None:
+    assert "no build transcript" in compact_run(tmp_path, "r")
+    assert "no build transcript" in compact_run(tmp_path, "")

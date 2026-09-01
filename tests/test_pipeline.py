@@ -565,6 +565,7 @@ async def test_a_research_phase_does_not_get_the_build_s_turn_budget(tmp_path: P
     fake = FakeLLM(list(SHAPE_A))
     await pipeline(tmp_path, fake=fake, config=config(max_turns=40))
     # The loop is handed the cap, so assert on what the phase was actually allowed.
+    from loom.phases.base import MAX_ATTEMPTS
     from loom.pipeline import SHAPE_A_TURNS
 
     assert SHAPE_A_TURNS < 40
@@ -579,4 +580,8 @@ async def test_a_research_phase_does_not_get_the_build_s_turn_budget(tmp_path: P
     )
     result = await pipeline(tmp_path, fake=searching, stop="validate", config=config(max_turns=40))
     assert result.status == "invalid"  # ran out of turns, no artifact
-    assert searching.call_count == SHAPE_A_TURNS
+    # The *loop* is capped at SHAPE_A_TURNS. With money still to spare it then spends up to
+    # MAX_ATTEMPTS-1 tool-free salvage calls, asking the model to turn its research into the
+    # artifact; this model never concludes, so they are spent in vain and the phase stays
+    # 'invalid'. The real model (WP-4.7) produces its JSON on the first of them.
+    assert searching.call_count == SHAPE_A_TURNS + (MAX_ATTEMPTS - 1)

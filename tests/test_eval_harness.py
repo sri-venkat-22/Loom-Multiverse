@@ -71,6 +71,58 @@ def test_summary_totals_include_input_and_output_tokens() -> None:
     }
 
 
+def test_markdown_surfaces_error_rows_separately_from_bad_builds() -> None:
+    """An infra failure (error set) must be distinguishable from a genuine 0-score build."""
+    results = [
+        {
+            "id": "quota",
+            "passed": False,
+            "score": 0.0,
+            "turns": 0,
+            "in_tok": 0,
+            "out_tok": 0,
+            "usd_spent": 0.0,
+            "wall_time": 1.0,
+            "error": "RuntimeError: 429 daily quota exceeded",
+        },
+        {
+            "id": "badbuild",
+            "passed": False,
+            "score": 0.1,
+            "turns": 7,
+            "in_tok": 90,
+            "out_tok": 30,
+            "usd_spent": 0.01,
+            "wall_time": 2.0,
+            "error": None,
+        },
+    ]
+    report = render_markdown(results, summarize_results(results, wall_time=3.0))
+
+    assert "429 daily quota exceeded" in report
+    assert "**quota**" in report  # the errored fixture is called out by id
+    assert "badbuild" not in report.split("## Errors")[1]  # a real 0-score build is not an error
+
+
+async def test_fixture_captures_exception_string(monkeypatch, tmp_path) -> None:
+    """A pipeline failure lands in the row as `error`, not just on stdout (FR-EVAL-01)."""
+
+    class Stub:
+        def __init__(self, *_a, **_k) -> None:
+            pass
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("429 daily quota exceeded")
+
+    monkeypatch.setattr(harness, "LiteLLMProvider", Stub)
+    monkeypatch.setattr(harness, "run_pipeline", boom)
+
+    result = await harness.run_fixture({"id": "quota", "idea": "an app"}, tmp_path)
+
+    assert result["passed"] is False
+    assert result["error"] == "RuntimeError: 429 daily quota exceeded"
+
+
 async def test_fixture_totals_include_judge_provider_ledger_rows(monkeypatch, tmp_path) -> None:
     """FR-EVAL-01, FR-COST-02 — judge calls land in the fixture's own ledger."""
 

@@ -27,6 +27,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from loom.agent.tools.fs import atomic_write
+from loom.blueprints.loader import load_blueprint
 from loom.cache import PhaseCache, config_slice
 from loom.config import Config
 from loom.contracts import PRD, Design, Provider, Response, Validation
@@ -381,7 +382,8 @@ async def _shape_a(
     result: PipelineResult,
     fetcher: Any,
 ) -> BaseModel:
-    phase = make_phase(name, fetcher=fetcher)
+    blueprint = load_blueprint(config.blueprint) if name == "design" and config.blueprint else None
+    phase = make_phase(name, fetcher=fetcher, blueprint=blueprint, on_event=on_event)
     outcome: PhaseOutcome = await phase.execute(
         provider=provider,
         inputs=inputs_for(
@@ -437,13 +439,19 @@ async def _build(
     return build.score if build.score is not None else build
 
 
-def make_phase(name: str, *, fetcher: Any = None) -> Phase:
+def make_phase(
+    name: str,
+    *,
+    fetcher: Any = None,
+    blueprint: Any = None,
+    on_event: Callable[..., Any] | None = None,
+) -> Phase:
     if name == "validate":
         return ValidatePhase(fetcher=fetcher)
     if name == "plan":
         return PlanPhase()
     if name == "design":
-        return DesignPhase()
+        return DesignPhase(blueprint=blueprint, on_event=on_event)
     raise ValueError(f"{name!r} is not a Shape A phase")
 
 

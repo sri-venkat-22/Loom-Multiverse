@@ -36,6 +36,7 @@ EVENT_KINDS = frozenset(
         "graded",
         "retry",
         "budget_warning",
+        "compacted",
         "phase_finished",
         "interrupted",
         "run_finished",

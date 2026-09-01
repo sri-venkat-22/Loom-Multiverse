@@ -25,6 +25,7 @@ from loom.agent.providers import (
     key_variable_for,
 )
 from loom.agent.tools.ask_user import AskUser
+from loom.blueprints.loader import load_blueprint
 from loom.cache import PhaseCache
 from loom.config import (
     Config,
@@ -34,6 +35,8 @@ from loom.config import (
     user_config_path,
 )
 from loom.contracts import Provider
+from loom.diagnostics import bug_bundle, format_report
+from loom.diagnostics import doctor as run_doctor
 from loom.gates import AutoApprove, TerminalGate
 from loom.ledger import Ledger
 from loom.pipeline import PHASES, PipelineResult, UnattendedWithoutBudget, run_pipeline
@@ -42,7 +45,7 @@ from loom.session import LOOM_DIR, Session, list_runs
 from loom.tui.app import start_session
 from loom.tui.banner import BannerState
 from loom.tui.theme import DEFAULT_THEME
-from loom.ui import event_sink
+from loom.ui import TokenStream, event_sink
 
 app = typer.Typer(add_completion=False, help="Turn an idea into a working, tested codebase.")
 
@@ -80,6 +83,9 @@ MaxTurnsOpt = typer.Option(None, "--max-turns", help="Turn cap per phase.")
 MaxUsdOpt = typer.Option(None, "--max-usd", help="USD cap per phase.")
 YesOpt = typer.Option(False, "--yes", "-y", help="Auto-approve every gate. No TTY needed.")
 NoCacheOpt = typer.Option(False, "--no-cache", help="Ignore the phase cache.")
+BlueprintOpt = typer.Option(
+    None, "--blueprint", help="Blueprint path or first-party name to bias the design."
+)
 JsonOpt = typer.Option(False, "--json", help="Emit events as JSON Lines; no other output.")
 RunOpt = typer.Option(None, "--run", help="Which run. Default: the latest.")
 PromptOpt = typer.Option(None, "--prompt", help="Use this prompt file instead.")
@@ -299,10 +305,48 @@ def _repl_for(root: Path) -> Callable[[Any], int]:
             if int(exc.exit_code or 0) != 0:
                 typer.echo(f"(phase ended with exit {int(exc.exit_code or 0)})")
 
+    def do_replay(phase: str) -> None:
+        """`/replay` from the REPL — the same `replay_phase` path `loom replay` takes, against
+        the latest run's cached upstream artifacts, printing the diff and returning to the prompt.
+        """
+        rid = _latest_run(root)
+        if rid is None:
+            typer.echo("no run to replay")
+            return
+        apply_credentials()
+        cfg = load_config(cwd=root)
+        session = Session(root, rid)
+        provider = LiteLLMProvider(
+            cfg.model,
+            price_table=cfg.price_table,
+            ledger=Ledger(ledger_path(root)),
+            phase=phase,
+            run_id=rid,
+            on_event=session.log_event,
+        )
+        try:
+            result = asyncio.run(
+                replay_phase(
+                    root=root,
+                    run_id=rid,
+                    phase=phase,
+                    provider=provider,
+                    config=cfg,
+                    prompt_path=None,
+                    session=session,
+                    ask_user_fn=AskUser(yes=True, on_event=session.log_event),
+                )
+            )
+        except (ProviderError, ValueError, FileNotFoundError) as exc:
+            typer.echo(str(exc))
+            return
+        typer.echo(result.diff)
+
     actions = ReplActions(
         start_idea=lambda idea: run("validate", "build", idea, None),
         start_run=lambda s, st, _rf: run(s, st, "", _latest_run(root)),
         resume=lambda rid: run(_resume_start(root, rid), "build", "", rid),
+        replay=do_replay,
         run_state=lambda: _repl_run_state(root),
         cost_report=lambda: _cost_string(root),
         status_report=lambda: _status_string(root, load_config(cwd=root)),
@@ -348,13 +392,22 @@ def _status_string(root: Path, config: Config) -> str:
 
 
 def _providers(
-    config: Config, *, root: Path, session: Session, ledger: Ledger
+    config: Config,
+    *,
+    root: Path,
+    session: Session,
+    ledger: Ledger,
+    on_token: Callable[[str], None] | None = None,
 ) -> tuple[Any, Provider]:
     """A per-phase provider factory, and the judge.
 
     One provider per phase rather than one per run, so that `loom cost` can say which phase
     spent the money. The judge is built without a ledger of its own — `rubric.grade()` records
     its spend under phase "judge", and a second ledger would double-count it.
+
+    `on_token`, when set (an interactive TTY run), makes each phase provider stream and forward
+    assistant text as it arrives (FR-REPL-05). The judge never streams — a rubric grade is not
+    something a human watches token by token.
     """
 
     def factory(phase: str) -> Provider:
@@ -365,6 +418,7 @@ def _providers(
             phase=phase,
             run_id=session.run_id,
             on_event=session.log_event,
+            on_token=on_token,
         )
 
     judge = LiteLLMProvider(config.judge_model, price_table=config.price_table)
@@ -385,6 +439,7 @@ def _run_phases(
     max_usd: float | None,
     yes: bool,
     no_cache: bool,
+    blueprint: str | None = None,
     run_id: str | None = None,
     json_out: bool = False,
 ) -> PipelineResult:
@@ -405,11 +460,20 @@ def _run_phases(
                 "max_turns": max_turns,
                 "max_usd": max_usd,
                 "budget_usd": budget,
+                "blueprint": blueprint,
             },
         )
     except Exception as exc:
         typer.echo(f"config error: {exc}")
         raise typer.Exit(ExitCode.USAGE) from exc
+
+    if config.blueprint:
+        # Fail fast on a bad --blueprint before validate and plan spend a cent reaching design.
+        try:
+            load_blueprint(config.blueprint)
+        except (OSError, ValueError) as exc:
+            typer.echo(f"blueprint error: {exc}")
+            raise typer.Exit(ExitCode.USAGE) from exc
 
     session = Session(root, run_id)
     # FR-HEADLESS-02/03 — render the same events `session.log_event` writes to disk. Tapping the
@@ -427,7 +491,12 @@ def _run_phases(
         session.log_event = _log_and_render  # type: ignore[method-assign]
 
     ledger = Ledger(ledger_path(root))
-    factory, judge = _providers(config, root=root, session=session, ledger=ledger)
+    # FR-REPL-05 — stream assistant text only on an interactive TTY. A piped or `--json` run keeps
+    # its one-line-per-turn output (FR-HEADLESS-02/03); tokens rewriting a log would be noise.
+    stream_tokens = TokenStream(sys.stdout) if (not json_out and sys.stdout.isatty()) else None
+    factory, judge = _providers(
+        config, root=root, session=session, ledger=ledger, on_token=stream_tokens
+    )
     unattended = config.mode == "unattended"
     # FR-HEADLESS-01 — `--yes` is the whole non-interactive path, not a second one. The gate is
     # the only thing that differs, and both write the same events.
@@ -518,6 +587,7 @@ def run(
     max_usd: float = MaxUsdOpt,
     yes: bool = YesOpt,
     no_cache: bool = NoCacheOpt,
+    blueprint: str = BlueprintOpt,
     json_out: bool = JsonOpt,
 ) -> None:
     """Validate, plan, design and build, with a gate between each."""
@@ -534,6 +604,7 @@ def run(
         max_usd=max_usd,
         yes=yes,
         no_cache=no_cache,
+        blueprint=blueprint,
         json_out=json_out,
     )
 
@@ -615,6 +686,7 @@ def design(
     budget: float = BudgetOpt,
     yes: bool = YesOpt,
     no_cache: bool = NoCacheOpt,
+    blueprint: str = BlueprintOpt,
 ) -> None:
     """Turn the run's `prd.json` into `design.json`, rubric included."""
     _continue(
@@ -629,6 +701,7 @@ def design(
         max_usd=None,
         yes=yes,
         no_cache=no_cache,
+        blueprint=blueprint,
     )
 
 
@@ -749,6 +822,32 @@ def replay(
 
 
 @app.command()
+def preview(
+    path: Path = PathOpt,
+    timeout: float = typer.Option(30.0, "--timeout", help="Seconds to wait for the app to answer."),
+) -> None:
+    """Boot the built app on a local URL and hold it until Ctrl-C. FR-BP-03."""
+    import time
+
+    from loom.preview import PreviewError
+    from loom.preview import preview as boot_preview
+
+    root = path.resolve()
+    try:
+        with boot_preview(root, timeout=timeout) as live:
+            typer.echo(f"serving {live.target} at {live.url}  (Ctrl-C to stop)")
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
+    except PreviewError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(ExitCode.USAGE) from exc
+    typer.echo("\nstopped; port released")
+
+
+@app.command()
 def cost(
     path: Path = PathOpt,
     run_id: str = RunOpt,
@@ -763,6 +862,27 @@ def cost(
             typer.echo(f"\nby {label}:")
             for name, usd in rows.items():
                 typer.echo(f"  {name:<28} ${usd:.4f}")
+
+
+@app.command()
+def doctor(path: Path = PathOpt) -> None:
+    """Check Python, git, the provider key, reachability, workspace and disk (FR-DIAG-02)."""
+    root = path.resolve()
+    apply_credentials()  # so the credential check sees keys from .env / credentials.json
+    checks = run_doctor(root)
+    typer.echo(format_report(checks, ok="✓", fail="✗"))
+    if not all(c.ok for c in checks):
+        raise typer.Exit(ExitCode.ERROR)
+
+
+@app.command()
+def bug(path: Path = PathOpt) -> None:
+    """Write a redacted diagnostic bundle to a file. Nothing is uploaded (FR-DIAG-03)."""
+    root = path.resolve()
+    apply_credentials()
+    dest = bug_bundle(root)
+    typer.echo(f"wrote a redacted diagnostic bundle → {dest}")
+    typer.echo("secrets are stripped and nothing was uploaded; attach it to a bug report.")
 
 
 def main() -> None:  # pragma: no cover - console-script entry point

@@ -32,8 +32,9 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.key_processor import KeyPressEvent
 from prompt_toolkit.output import Output
 
+from loom import diagnostics
 from loom.agent.tools.bash import DEFAULT_TIMEOUT, MAX_OUTPUT_CHARS, _run
-from loom.config import Config, set_project_config_value
+from loom.config import Config, load_config, set_project_config_value
 from loom.security import CommandDenied, check_command
 from loom.session import LOOM_DIR, append_note, list_runs
 from loom.tui.commands import RunState, dispatch
@@ -143,6 +144,7 @@ class ReplActions:
     followup: Callable[[str], None] = _noop
     start_run: Callable[[str, str, tuple[str, ...]], None] = _noop
     resume: Callable[[str], None] = _noop
+    replay: Callable[[str], None] = _noop
     run_state: Callable[[], RunState] = lambda: "idle"
     gate_phase: Callable[[], str] = lambda: "the current"
     cost_report: Callable[[], str] = lambda: "no spend recorded"
@@ -191,6 +193,7 @@ class Repl:
         self.mode: str = config.mode  # widens the Literal so it can cycle (FR-KEY-02)
         runs = list_runs(self.root)
         self.run_id = runs[-1] if runs else ""
+        self._extra_dirs: list[Path] = []  # /add-dir, for the session (FR-SEC-03)
         self._widget_input: Input | None = None
         self._widget_output: Output | None = None
 
@@ -259,6 +262,28 @@ class Repl:
     def resume(self, run_id: str) -> None:
         self.actions.resume(run_id)
 
+    def persist_config(self, key: str, value: object) -> None:
+        set_project_config_value(self.root, key, value)  # type: ignore[arg-type]
+        # Reload rather than patch: a written key re-runs the effort-preset derivation and the
+        # whole precedence chain, so the in-memory config matches what the next phase will read.
+        self.config = load_config(cwd=self.root)
+
+    def replay(self, phase: str) -> None:
+        self.actions.replay(phase)
+
+    def change_dir(self, path: Path) -> None:
+        """Re-root the session (FR-SEC-03). Every REPL command reads `self.root`, so `/status`,
+        `/cost`, `/artifacts`, `!bash` and the rest follow at once. Starting a *new* pipeline run
+        elsewhere is a fresh `loom` in that directory — each project dir owns its own `.loom/`."""
+        self.root = path
+        runs = list_runs(self.root)
+        self.run_id = runs[-1] if runs else ""
+        self.config = load_config(cwd=self.root)
+
+    def add_dir(self, path: Path) -> None:
+        if path not in self._extra_dirs:
+            self._extra_dirs.append(path)
+
     def clear_session(self) -> None:
         self.run_id = ""
 
@@ -267,6 +292,21 @@ class Repl:
 
     def status_report(self) -> str:
         return self.actions.status_report()
+
+    def doctor_report(self) -> str:
+        checks = diagnostics.doctor(self.root, config=self.config)
+        return diagnostics.format_report(
+            checks, ok=self.theme.glyph["ok"], fail=self.theme.glyph["fail"]
+        )
+
+    def write_bug_bundle(self) -> str:
+        path = diagnostics.bug_bundle(self.root, config=self.config)
+        return f"wrote a redacted diagnostic bundle → {path}\n(nothing was uploaded)"
+
+    def compact_context(self) -> str:
+        from loom.agent.context import compact_run
+
+        return compact_run(self.root, self.run_id)
 
     # --------------------------------------------------------------- one line of input
 

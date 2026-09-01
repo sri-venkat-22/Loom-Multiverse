@@ -55,6 +55,7 @@ async def run_fixture(fixture: Mapping[str, str], base_dir: Path) -> dict[str, A
         return LiteLLMProvider(MODEL, ledger=ledger, phase=phase, run_id="e2e", on_event=record)
 
     start_time = time.monotonic()
+    error: str | None = None
     try:
         result = await run_pipeline(
             idea,
@@ -75,7 +76,9 @@ async def run_fixture(fixture: Mapping[str, str], base_dir: Path) -> dict[str, A
     except Exception as e:
         passed = False
         result = None
-        print(f"[{fid}] Pipeline raised exception: {e}")
+        # Keep the reason in the row: a quota/network failure must not read as a bad build.
+        error = f"{type(e).__name__}: {e}"
+        print(f"[{fid}] Pipeline raised exception: {error}")
 
     wall_time = time.monotonic() - start_time
 
@@ -100,6 +103,7 @@ async def run_fixture(fixture: Mapping[str, str], base_dir: Path) -> dict[str, A
         "out_tok": out_tok,
         "usd_spent": usd_spent,
         "wall_time": wall_time,
+        "error": error,
     }
 
 
@@ -149,7 +153,29 @@ def render_markdown(results: Sequence[Mapping[str, Any]], summary: Mapping[str, 
             **metrics, pass_count=pass_count, count=len(ordered)
         )
     )
+    # An errored fixture never reached a build. List those reasons apart from the score table so a
+    # quota/network blip is not read as "Loom scored 0".
+    errored = [result for result in ordered if result.get("error")]
+    if errored:
+        lines += ["", "## Errors", ""]
+        lines += [f"- **{result['id']}**: {result['error']}" for result in errored]
     return "\n".join(lines) + "\n"
+
+
+def _error_row(fixture: Mapping[str, str], exc: BaseException) -> dict[str, Any]:
+    """A zeroed row for a fixture that failed before run_fixture could return one."""
+    return {
+        "id": fixture["id"],
+        "idea": fixture.get("idea", ""),
+        "passed": False,
+        "score": 0.0,
+        "turns": 0,
+        "in_tok": 0,
+        "out_tok": 0,
+        "usd_spent": 0.0,
+        "wall_time": 0.0,
+        "error": f"{type(exc).__name__}: {exc}",
+    }
 
 
 async def _run_limited(
@@ -177,9 +203,15 @@ async def main() -> None:
 
     print(f"Running eval harness on {len(fixtures)} fixtures...")
     start_time = time.monotonic()
-    results = await asyncio.gather(
-        *(_run_limited(fixture, base_dir, semaphore) for fixture in fixtures)
+    # return_exceptions: one fixture blowing up in setup must not wipe the whole report.
+    raw = await asyncio.gather(
+        *(_run_limited(fixture, base_dir, semaphore) for fixture in fixtures),
+        return_exceptions=True,
     )
+    results = [
+        res if not isinstance(res, BaseException) else _error_row(fixture, res)
+        for fixture, res in zip(fixtures, raw, strict=True)
+    ]
     summary = summarize_results(results, wall_time=time.monotonic() - start_time)
 
     with (RESULTS_DIR / "report.json").open("w", encoding="utf-8") as f:

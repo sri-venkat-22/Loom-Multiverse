@@ -14,10 +14,15 @@ import difflib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
-from loom.config import Config
+from pydantic import ValidationError
+
+from loom.config import Config, config_sources
+from loom.contracts import Design
+from loom.phases.base import artifact_path
 from loom.pipeline import PHASES
+from loom.rubric import Score
 from loom.tui.widgets import (
     EFFORT_ORDER,
     ModelChoice,
@@ -32,6 +37,10 @@ from loom.tui.widgets import (
     phase_summary,
     run_rows,
 )
+
+#: Phases `/replay` can re-run: the Shape A phases, which produce one JSON artifact from cached
+#: upstream. `build` is not replayable — it is the whole agent loop, not a single re-prompt.
+REPLAYABLE: tuple[str, ...] = ("validate", "plan", "design")
 
 #: The four run states free text and while-running gating branch on (FR-REPL-03, FR-SLASH-09).
 RunState = Literal["idle", "gate", "running", "finished"]
@@ -78,11 +87,18 @@ class ReplContext(Protocol):
     def persist_default_model(self, model: str) -> None: ...
     def use_model_this_session(self, model: str) -> None: ...
     def persist_default_effort(self, level: str) -> None: ...
+    def persist_config(self, key: str, value: object) -> None: ...
     def start_run(self, start: str, stop: str, run_first: tuple[str, ...] = ()) -> None: ...
     def resume(self, run_id: str) -> None: ...
+    def replay(self, phase: str) -> None: ...
+    def change_dir(self, path: Path) -> None: ...
+    def add_dir(self, path: Path) -> None: ...
     def clear_session(self) -> None: ...
     def cost_report(self) -> str: ...
     def status_report(self) -> str: ...
+    def doctor_report(self) -> str: ...
+    def write_bug_bundle(self) -> str: ...
+    def compact_context(self) -> str: ...
 
 
 Handler = Callable[["ReplContext", str], None]
@@ -235,6 +251,181 @@ def _status(ctx: ReplContext, args: str) -> None:
     ctx.write(ctx.status_report())
 
 
+def _load_score(root: Path, run_id: str) -> Score | None:
+    """The last grading for this run (`score.json`, FR-ART-04), or None if absent or torn."""
+    path = artifact_path(root, run_id, "build")
+    if not path.is_file():
+        return None
+    try:
+        return Score.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValidationError):
+        return None
+
+
+def rubric_report(root: Path, run_id: str) -> str:
+    """The design's rubric with the last score beside each criterion — the mockup's `/rubric`."""
+    design_path = artifact_path(root, run_id, "design")
+    if not design_path.is_file():
+        return "no rubric yet — run /design to produce one"
+    design = Design.model_validate_json(design_path.read_text(encoding="utf-8"))
+    rubric = design.rubric
+    score = _load_score(root, run_id)
+    scored = {c.name: c for c in score.criteria} if score else {}
+    lines = [f"Rubric — threshold {rubric.threshold:.2f}"]
+    for c in rubric.criteria:
+        hard = "  hard-fail" if c.name in rubric.hard_fail else ""
+        got = f"  → {scored[c.name].score:.2f}" if c.name in scored else ""
+        lines.append(f"  {c.name:<22} {c.kind:<6} w{c.weight:.2f}{hard}{got}")
+    if score is not None:
+        lines.append(f"last score {score.total:.2f} against threshold {rubric.threshold:.2f}")
+    return "\n".join(lines)
+
+
+def _rubric(ctx: ReplContext, args: str) -> None:
+    ctx.write(rubric_report(ctx.root, ctx.run_id))
+
+
+def _existing_artifacts(root: Path, run_id: str) -> list[tuple[str, Path]]:
+    pairs = [(phase, artifact_path(root, run_id, phase)) for phase in PHASES]
+    return [(phase, path) for phase, path in pairs if path.is_file()]
+
+
+def _artifacts(ctx: ReplContext, args: str) -> None:
+    """FR-ART-02 — list what the run produced and open one, with the render the gate uses (the
+    JSON on disk). A typed phase name skips the picker (FR-SLASH-06)."""
+    existing = _existing_artifacts(ctx.root, ctx.run_id)
+    if not existing:
+        ctx.write("no artifacts yet for this run")
+        return
+    if args.strip():
+        target = args.strip().lower()
+        match = next((p for phase, p in existing if target in (phase, p.name)), None)
+        if match is None:
+            have = ", ".join(phase for phase, _ in existing)
+            ctx.write(f"no artifact {target!r} for this run — have: {have}")
+            return
+        ctx.write(match.read_text(encoding="utf-8"))
+        return
+    rows = [f"{phase:<9} {path.name}" for phase, path in existing]
+    index = ctx.run_list("Which artifact?", "", rows, "Enter to open · Esc to cancel")
+    if index is None:
+        ctx.write("/artifacts → cancelled")
+        return
+    ctx.write(existing[index][1].read_text(encoding="utf-8"))
+
+
+def config_report(root: Path, config: Config) -> str:
+    """FR-CFG-04 — every effective setting with the layer it came from."""
+    sources = config_sources(cwd=root)
+    data = config.model_dump()
+    lines = ["setting                value                          source"]
+    for key in Config.model_fields:
+        if key == "price_table":  # a table, not a scalar; edited in config.toml directly
+            continue
+        lines.append(f"  {key:<20} {str(data[key]):<30} {sources.get(key, 'default')}")
+    return "\n".join(lines)
+
+
+def _coerce_config(config: Config, key: str, raw: str) -> tuple[Any, str | None]:
+    """Validate `key = raw` by round-tripping the whole Config through pydantic, so a bad value or
+    an out-of-range effort is refused *before* it is written (never a broken config on disk)."""
+    if key not in Config.model_fields:
+        return None, f"no such setting {key!r} — /config lists them"
+    if key == "price_table":
+        return None, "price_table is edited in .loom/config.toml directly"
+    try:
+        trial = Config(**{**config.model_dump(), key: raw})
+    except ValidationError as exc:
+        return None, f"invalid {key}: {exc.errors()[0]['msg']}"
+    return getattr(trial, key), None
+
+
+def _config(ctx: ReplContext, args: str) -> None:
+    parts = args.split(maxsplit=1)
+    if not parts:
+        ctx.write(config_report(ctx.root, ctx.config))
+        return
+    if len(parts) == 1:
+        ctx.write(f"usage: /config {parts[0]} <value>  (or /config to list)")
+        return
+    value, error = _coerce_config(ctx.config, parts[0], parts[1])
+    if error:
+        ctx.write(error)
+        return
+    ctx.persist_config(parts[0], value)
+    ctx.write(f"/config → {parts[0]} = {value}")
+
+
+def _budget(ctx: ReplContext, args: str) -> None:
+    if not args.strip():
+        ctx.write(f"budget ceiling ${ctx.config.budget_usd:.2f} per run")
+        return
+    value, error = _coerce_config(ctx.config, "budget_usd", args.strip())
+    if error:
+        ctx.write(error)
+        return
+    ctx.persist_config("budget_usd", value)
+    ctx.write(f"/budget → ${value:.2f} per run")
+
+
+def _replay(ctx: ReplContext, args: str) -> None:
+    """FR-SLASH / `loom replay` from the REPL — re-run one Shape A phase against cached inputs."""
+    phase = args.strip().lower()
+    if phase not in REPLAYABLE:
+        ctx.write(f"/replay <phase> — one of {', '.join(REPLAYABLE)}")
+        return
+    missing = missing_upstream(phase, phase_rows(ctx.root, ctx.run_id))
+    if missing:
+        ctx.write(f"can't replay {phase} — {', '.join(missing)} not produced yet")
+        return
+    ctx.write(f"/replay → re-running {phase} against cached inputs")
+    ctx.replay(phase)
+
+
+def _resolve_dir(root: Path, target: str) -> Path | None:
+    raw = Path(target).expanduser()
+    path = (raw if raw.is_absolute() else root / raw).resolve()
+    return path if path.is_dir() else None
+
+
+def _cd(ctx: ReplContext, args: str) -> None:
+    if not args.strip():
+        ctx.write("usage: /cd <directory>")
+        return
+    path = _resolve_dir(ctx.root, args.strip())
+    if path is None:
+        ctx.write(f"no such directory: {args.strip()}")
+        return
+    ctx.change_dir(path)
+    ctx.write(f"/cd → {path}")
+
+
+def _add_dir(ctx: ReplContext, args: str) -> None:
+    if not args.strip():
+        ctx.write("usage: /add-dir <directory>")
+        return
+    path = _resolve_dir(ctx.root, args.strip())
+    if path is None:
+        ctx.write(f"no such directory: {args.strip()}")
+        return
+    ctx.add_dir(path)
+    ctx.write(f"/add-dir → {path}")
+
+
+def _compact(ctx: ReplContext, args: str) -> None:
+    """FR-SESS-06 — compact the context on demand and report the tokens reclaimed. The work is
+    core (`context.compact_run`); the handler only routes and prints its one-line report."""
+    ctx.write(ctx.compact_context())
+
+
+def _doctor(ctx: ReplContext, args: str) -> None:
+    ctx.write(ctx.doctor_report())
+
+
+def _bug(ctx: ReplContext, args: str) -> None:
+    ctx.write(ctx.write_bug_bundle())
+
+
 def _unimplemented(ctx: ReplContext, args: str) -> None:
     ctx.write("that command is not available in this build yet")
 
@@ -300,7 +491,7 @@ REGISTRY: list[Command] = [
         "run control",
         "Re-run one phase against cached upstream artifacts",
         while_running="refuse",
-        handler=_unimplemented,
+        handler=_replay,
     ),
     Command(
         "artifacts",
@@ -308,13 +499,13 @@ REGISTRY: list[Command] = [
         "Inspect or edit what each phase produced",
         widget="artifacts",
         while_running="refuse",
-        handler=_unimplemented,
+        handler=_artifacts,
     ),
     Command(
         "rubric",
         "run control",
         "Show the rubric and the last score breakdown",
-        handler=_unimplemented,
+        handler=_rubric,
     ),
     Command(
         "clear",
@@ -345,23 +536,23 @@ REGISTRY: list[Command] = [
         "settings",
         "Set the dollar ceiling for this run",
         while_running="queue",
-        handler=_unimplemented,
+        handler=_budget,
     ),
-    Command("config", "settings", "Edit .loom/config.toml", handler=_unimplemented),
+    Command("config", "settings", "Edit .loom/config.toml", handler=_config),
     # workspace ─────────────────────────────────────────────────────────────────────
     Command(
         "add-dir",
         "workspace",
         "Add a directory to the workspace jail",
         while_running="refuse",
-        handler=_unimplemented,
+        handler=_add_dir,
     ),
     Command(
         "cd",
         "workspace",
         "Change the working directory",
         while_running="refuse",
-        handler=_unimplemented,
+        handler=_cd,
     ),
     # session ───────────────────────────────────────────────────────────────────────
     Command("cost", "session", "Spend this session, by phase and by model", handler=_cost),
@@ -371,7 +562,7 @@ REGISTRY: list[Command] = [
         "session",
         "Summarize the conversation to reclaim context",
         while_running="queue",
-        handler=_unimplemented,
+        handler=_compact,
     ),
     Command("help", "session", "List every command and what it does", handler=_help),
     # diagnostics ───────────────────────────────────────────────────────────────────
@@ -379,11 +570,9 @@ REGISTRY: list[Command] = [
         "doctor",
         "diagnostics",
         "Check python, git, provider key and network",
-        handler=_unimplemented,
+        handler=_doctor,
     ),
-    Command(
-        "bug", "diagnostics", "Write a redacted diagnostic bundle to a file", handler=_unimplemented
-    ),
+    Command("bug", "diagnostics", "Write a redacted diagnostic bundle to a file", handler=_bug),
     # advanced (R1.1) ───────────────────────────────────────────────────────────────
     Command(
         "background",

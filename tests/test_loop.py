@@ -342,3 +342,38 @@ async def test_a_secret_in_a_tool_argument_never_reaches_the_event_log(
     logged = [f for k, f in events if k == "tool_call"][0]
     assert "sk-ant-planted-fake-key" not in str(logged)
     assert "[redacted]" in logged["args"]["text"]
+
+
+async def test_a_long_transcript_is_auto_compacted_before_the_call() -> None:
+    """WP-5.2, NFR-REL — once the transcript passes the threshold and there is old tool output to
+    shrink, the loop compacts it in place and emits a `compacted` event. The invariant compaction
+    exists for still holds: no tool call is left without its result."""
+    events: list[tuple[str, dict[str, Any]]] = []
+    big = "x" * 1000  # each tool result well over GIST_CHARS, so old turns actually reclaim
+    script = [call("echo", f"c{i}", text=big) for i in range(1, 16)] + [Response(text="done")]
+    result, _ = await run(
+        script,
+        max_turns=20,
+        compact_above_chars=3_000,
+        on_event=lambda kind, **fields: events.append((kind, fields)),
+    )
+
+    assert result.status == "passed"
+    compacted = [f for kind, f in events if kind == "compacted"]
+    assert compacted, "a transcript well past the threshold was never compacted"
+    assert compacted[0]["reclaimed_chars"] > 0
+
+    call_ids = {c["id"] for m in result.messages for c in m.get("tool_calls", []) or []}
+    result_ids = {m["tool_call_id"] for m in result.messages if m.get("role") == "tool"}
+    assert call_ids == result_ids
+
+
+async def test_a_short_transcript_is_never_compacted() -> None:
+    """The threshold is a floor: a normal, small run pays for no compaction pass and emits no
+    `compacted` event."""
+    events: list[tuple[str, dict[str, Any]]] = []
+    await run(
+        [call("echo", "c1", text="hi"), Response(text="done")],
+        on_event=lambda kind, **fields: events.append((kind, fields)),
+    )
+    assert not [f for kind, f in events if kind == "compacted"]

@@ -1230,7 +1230,7 @@ the code wins and this section is the bug.
 `ts` (ISO-8601 UTC) · `run_id` · `seq` (monotonic) · `kind` · plus kind-specific fields.
 Event kinds: `run_started`, `phase_started`, `turn`, `tool_call`, `tool_result`, `ask_user`,
 `user_answer`, `artifact_written`, `gate_opened`, `gate_decision`, `graded`, `retry`,
-`budget_warning`, `phase_finished`, `interrupted`, `run_finished`.
+`budget_warning`, `compacted`, `phase_finished`, `interrupted`, `run_finished`.
 
 **Ledger row** (`spend` table): `id`, `ts`, `run_id`, `phase`, `model`, `in_tok`, `out_tok`,
 `usd`, `seconds`.

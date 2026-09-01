@@ -268,9 +268,13 @@ class Phase(ABC):
             attempts.append(Attempt(n=n, raw=raw, error=error))
             if n == MAX_ATTEMPTS:
                 break
-            if result.status == "budget_exhausted":
-                # The phase ran out of money mid-thought. A repair is another provider call,
-                # and buying one past the ceiling is exactly what FR-AGENT-02 exists to stop.
+            if result.status == "budget_exhausted" and usd >= max_usd:
+                # Out of *money* mid-thought. A repair is another provider call, and buying one
+                # past the ceiling is exactly what FR-AGENT-02 exists to stop. The loop reports
+                # turn-exhaustion as "budget_exhausted" too, but that case has money to spare and
+                # falls through: a phase that spent its turns researching (Validate can burn all
+                # of them on search/fetch and never conclude) gets one tool-free call to turn that
+                # research into the JSON it was for, rather than hard-failing with an empty reply.
                 attempts[-1].error += " (the phase hit its USD ceiling; no repair was attempted)"
                 break
             _emit(on_event, "retry", phase=self.name, attempt=n, reason=error.splitlines()[0])

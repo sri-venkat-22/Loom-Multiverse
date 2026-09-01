@@ -48,10 +48,9 @@ DEFAULT_EFFORT: Effort = "medium"
 
 #: Which model an effort tier resolves to when the user has not named one.
 #:
-#: The cheap tier is Nemotron 3 Ultra's free OpenRouter variant. Verified against OpenRouter's
-#: model API before being chosen: it advertises `tools` and `tool_choice`, which is the only
-#: capability that actually decides whether a model can drive the build phase, and a 1M context.
-#: It does **not** advertise `response_format` / `structured_outputs` — the paid variant does —
+#: The cheap tier is Nemotron 3 Ultra served free through NVIDIA NIM (`nvidia_nim/`). It advertises
+#: `tools` and `tool_choice` — the one capability that decides whether a model can drive the build
+#: phase — and a 1M context. It does **not** advertise `response_format` / `structured_outputs`,
 #: which costs Loom nothing, because `phases/base.py` puts the schema in the prompt rather than
 #: asking the provider for native structured output.
 MODEL_TIERS: dict[str, str] = {

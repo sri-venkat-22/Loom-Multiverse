@@ -17,8 +17,11 @@ fixture does that this prompt does not ask for is a gap in the prompt.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any, ClassVar
 
+from loom.blueprints.loader import Blueprint, merge_blueprint
 from loom.contracts import PRD, Design, Validation
 from loom.phases.base import Phase
 
@@ -41,6 +44,18 @@ class DesignPhase(Phase):
     name: ClassVar[str] = "design"
     artifact_model: ClassVar[type] = Design
     prompt_name: ClassVar[str] = "design"
+
+    def __init__(
+        self,
+        *,
+        prompt_path: Path | None = None,
+        blueprint: Blueprint | None = None,
+        on_event: Callable[..., Any] | None = None,
+    ) -> None:
+        super().__init__(prompt_path=prompt_path)
+        self.blueprint = blueprint
+        self._on_event = on_event
+        self._merge_logged = False
 
     def prepare_input(
         self,
@@ -74,15 +89,51 @@ class DesignPhase(Phase):
             lines += ["", "## Risks the research found", *(f"- {r}" for r in validation.risks)]
         if notes.strip():
             lines += ["", "## Constraints from the founder", "", notes.strip()]
+        if self.blueprint is not None:
+            lines += self._blueprint_section()
         return "\n".join(lines)
+
+    def _blueprint_section(self) -> list[str]:
+        """Bias the model toward the blueprint's choices. Also puts the blueprint in the task,
+        so the cache key differs per blueprint and two blueprints never share a cache entry."""
+        bp = self.blueprint
+        assert bp is not None
+        out = ["", f"## Blueprint: {bp.name or 'preset'} — prefer these known-good choices", ""]
+        if bp.stack:
+            out += ["Stack: " + ", ".join(bp.stack), ""]
+        if bp.scaffold_command:
+            out += [f"Scaffold command: `{bp.scaffold_command}`", ""]
+        if bp.file_manifest:
+            out += ["Expected files (add more as the idea needs):"]
+            out += [f"- `{f.path}` — {f.purpose}" for f in bp.file_manifest]
+            out += [""]
+        if bp.rubric is not None and bp.rubric.criteria:
+            out += ["These acceptance criteria are already fixed; do not restate them:"]
+            for c in bp.rubric.criteria:
+                out.append(f"- {c.name}: {c.description or c.command or c.question}")
+            out += [""]
+        out += ["These are merged into your output automatically; align your design with them."]
+        return out
 
     def refine(self, artifact: Any) -> Any:
         """FR-DES-03 — raise, so the repair loop hands the model back its own broken rubric.
 
         A rubric this phase let through un-gradable is not caught again downstream: the build
         phase would spend a whole budget being told it scored 0.6 out of a possible 0.6.
+
+        FR-BP-01 — the blueprint merges here, before the gradability gate, so a blueprint that
+        pins a solid rubric can rescue a model's weak one instead of triggering a repair round.
         """
         design: Design = artifact
+        if self.blueprint is not None:
+            design, conflicts = merge_blueprint(design, self.blueprint)
+            if not self._merge_logged and self._on_event is not None:
+                self._on_event(
+                    "blueprint_merged",
+                    blueprint=self.blueprint.name or "blueprint",
+                    conflicts=conflicts,
+                )
+                self._merge_logged = True
         rubric = design.rubric
 
         if len(rubric.criteria) < MIN_CRITERIA:

@@ -61,6 +61,28 @@ class JsonLine:
         self.out.flush()
 
 
+class TokenStream:
+    """FR-REPL-05 — assistant text rendered as it streams in, not only when the turn is done.
+
+    The provider (`LiteLLMProvider`, when given this as its `on_token`) calls it with each text
+    delta as it arrives off the wire. It writes the delta straight through and flushes: the tokens
+    *are* the output, so there is no escape sequence and no cursor move here. It also keeps the
+    accumulated `text`, which is what the formatter test pins. Wired only on an interactive TTY;
+    a piped run streams nothing and gets one `TurnLine` per turn instead (FR-HEADLESS-02).
+    """
+
+    def __init__(self, out: TextIO) -> None:
+        self.out = out
+        self.text = ""
+
+    def __call__(self, delta: str) -> None:
+        if not delta:
+            return
+        self.text += delta
+        self.out.write(delta)
+        self.out.flush()
+
+
 def _tool(event: Event) -> str:
     """What the turn did: the tool(s) it called, else `text` if it answered, else a dash."""
     calls = event.get("tool_calls") or []

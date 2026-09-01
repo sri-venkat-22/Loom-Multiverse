@@ -23,6 +23,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from loom.agent.context import COMPACT_ABOVE_CHARS, compaction_report, transcript_chars
 from loom.agent.tools.registry import ToolNotFound, ToolRegistry
 from loom.contracts import Provider, ToolCall
 from loom.security import redact
@@ -80,6 +81,7 @@ async def run_agent_loop(
     rubric: Grader | None = None,
     on_event: Callable[..., Any] | None = None,
     ask_user_fn: Callable[..., Any] | None = None,
+    compact_above_chars: int = COMPACT_ABOVE_CHARS,
 ) -> LoopResult:
     """Run until the task passes, the money or the turns run out, or progress stops."""
     messages: list[dict[str, Any]] = [
@@ -108,6 +110,15 @@ async def run_agent_loop(
         # completion it has already decided to throw away.
         if usd >= max_usd:
             return finish("budget_exhausted")
+
+        # NFR-REL — keep a long build under the context window. Done at the turn boundary, where
+        # every tool_call already has its result, so compaction (which only shrinks old tool
+        # output and never drops a message) cannot orphan a call from its answer.
+        if transcript_chars(messages) >= compact_above_chars:
+            compacted, reclaimed, _ = compaction_report(messages)
+            if reclaimed > 0:
+                messages[:] = compacted
+                emit("compacted", reclaimed_chars=reclaimed, messages=len(messages))
 
         response = await provider.complete(messages, specs)
         turns = turn

@@ -1,0 +1,66 @@
+{
+  "name": "fastapi-sqlite-api",
+  "stack": [
+    "Python 3.11",
+    "FastAPI",
+    "sqlite3 (standard library)",
+    "uvicorn",
+    "pytest",
+    "httpx (for fastapi.testclient)"
+  ],
+  "scaffold_command": "uv init --name app -q && uv add fastapi 'uvicorn[standard]' -q && uv add --dev pytest httpx -q && mkdir -p app tests && : > app/__init__.py && printf 'def test_placeholder():\\n    assert True\\n' > tests/test_placeholder.py",
+  "file_manifest": [
+    {
+      "path": "app/__init__.py",
+      "purpose": "Empty package marker so `app` is importable. Nothing else belongs here.",
+      "depends_on": []
+    },
+    {
+      "path": "app/db.py",
+      "purpose": "SQLite persistence, standard-library sqlite3 only, no ORM. `DB_PATH` defaults to './app.db' and is read from the LOOM_DB_PATH env var so tests can point it at a temp file. `connect() -> sqlite3.Connection` opens DB_PATH with `row_factory = sqlite3.Row` and `PRAGMA foreign_keys = ON`. `init_db()` creates the schema if absent (idempotent — use `CREATE TABLE IF NOT EXISTS`). `get_conn()` is a FastAPI dependency that yields a connection and closes it in a finally block. Parameterise every query; never build SQL by string concatenation.",
+      "depends_on": []
+    },
+    {
+      "path": "app/main.py",
+      "purpose": "The FastAPI application. `app = FastAPI(title=...)`, calls `init_db()` on a startup event. Defines one Pydantic model per request body and one per response, and the REST endpoints the PRD lists, each using `Depends(get_conn)`. Create returns 201 with the created resource; a lookup that finds nothing raises `HTTPException(status_code=404)`; malformed bodies are left to FastAPI's automatic 422. No business logic in the route bodies beyond calling into small helpers.",
+      "depends_on": ["app/db.py"]
+    },
+    {
+      "path": "tests/test_api.py",
+      "purpose": "pytest suite using `fastapi.testclient.TestClient`. A fixture sets LOOM_DB_PATH to a tmp_path file and calls `init_db()` so every test runs against a fresh database. Cover: creating a resource returns 201 and echoes it back; listing then contains it; fetching a missing id returns 404; a request that violates the schema returns 422. Delete tests/test_placeholder.py, which the scaffold created only so the empty suite would pass.",
+      "depends_on": ["app/main.py"]
+    },
+    {
+      "path": "README.md",
+      "purpose": "What the API is, how to run it (`uv run uvicorn app.main:app --reload`), and one curl example per endpoint that actually works against the running server.",
+      "depends_on": ["app/main.py"]
+    }
+  ],
+  "rubric": {
+    "threshold": 0.85,
+    "hard_fail": ["tests", "app_boots"],
+    "criteria": [
+      {
+        "name": "tests",
+        "kind": "shell",
+        "weight": 0.4,
+        "description": "The project's own test suite passes.",
+        "command": "uv run pytest -q"
+      },
+      {
+        "name": "app_boots",
+        "kind": "shell",
+        "weight": 0.15,
+        "description": "The application imports and constructs without a database or import error.",
+        "command": "uv run python -c \"from app.main import app; assert app.title\""
+      },
+      {
+        "name": "serves_openapi",
+        "kind": "shell",
+        "weight": 0.15,
+        "description": "An acceptance check written with the rubric, not the model: the app actually serves over HTTP and publishes a schema. Weakening the project's own tests cannot make this pass.",
+        "command": "uv run python -c \"from fastapi.testclient import TestClient; from app.main import app; r = TestClient(app).get('/openapi.json'); assert r.status_code == 200, r.status_code; assert r.json()['paths']\""
+      }
+    ]
+  }
+}

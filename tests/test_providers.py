@@ -637,3 +637,52 @@ async def test_an_ordinary_rate_limit_is_still_retried() -> None:
     provider = LiteLLMProvider("openrouter/free/model", acompletion=flaky, base_delay=0.0)
     assert (await provider.complete([{"role": "user", "content": "hi"}])).text == "ok"
     assert attempts == 3
+
+
+# --------------------------------------------------------------------------- FR-REPL-05, streaming
+
+
+async def test_streaming_forwards_deltas_and_reassembles_the_response() -> None:
+    """FR-REPL-05 — with on_token set the provider streams: each text delta reaches on_token as it
+    arrives, and the reassembled response still carries the full text and the token counts."""
+    pieces = ["Hel", "lo, ", "world"]
+    seen_kwargs: list[dict[str, Any]] = []
+
+    async def streaming_acompletion(**kwargs: Any) -> Any:
+        seen_kwargs.append(kwargs)
+
+        async def gen() -> Any:
+            for piece in pieces:
+                yield {"choices": [{"delta": {"content": piece}}]}
+
+        return gen()
+
+    def builder(chunks: list[Any], messages: Any = None) -> dict[str, Any]:
+        text = "".join(c["choices"][0]["delta"]["content"] for c in chunks)
+        return {
+            "choices": [{"message": {"content": text}}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 3},
+        }
+
+    collected: list[str] = []
+    provider = LiteLLMProvider(
+        "openrouter/qwen/qwen3-coder",
+        acompletion=streaming_acompletion,
+        chunk_builder=builder,
+        on_token=collected.append,
+    )
+    response = await provider.complete([{"role": "user", "content": "hi"}])
+
+    assert collected == pieces  # streamed delta by delta, as it arrived
+    assert response.text == "Hello, world"  # and reassembled whole for the loop
+    assert response.out_tokens == 3
+    assert seen_kwargs[0]["stream"] is True  # it actually asked the provider to stream
+
+
+async def test_without_on_token_the_provider_does_not_stream() -> None:
+    """The default path is unchanged: no on_token, no stream=True, one plain completion."""
+    call = flaky()
+    provider = LiteLLMProvider("m", acompletion=call)
+    response = await provider.complete([{"role": "user", "content": "go"}])
+    assert response.text == "ok"
+    assert "stream" not in call.calls[0]

@@ -10,6 +10,7 @@ persisted score, and the squash on success.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
@@ -155,6 +156,7 @@ async def run_build(
     )
 
     label = snapshots.close()
+    _persist_transcript(workspace, run_id, result)
     build = BuildResult(
         status=result.status,
         score=grader.last,
@@ -250,6 +252,19 @@ def _task(design: Design, skeleton: ScaffoldResult, feedback: str = "") -> str:
     if feedback.strip():
         lines += ["", "## Reviewer feedback on the previous build", "", feedback.strip()]
     return "\n".join(lines)
+
+
+def _persist_transcript(root: Path, run_id: str, result: LoopResult) -> Path:
+    """The build's message history, next to the event stream under `runs/<id>/`. Not an artifact
+    — no phase reads it (FR-PIPE-02) — but the on-demand `/compact` (FR-SESS-06) shrinks it here,
+    and it is the honest record of what the model actually saw."""
+    from loom.session import runs_dir
+
+    directory = runs_dir(root) / (run_id or "latest")
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "transcript.json"
+    atomic_write(path, json.dumps(result.messages) + "\n")
+    return path
 
 
 def _persist_score(root: Path, run_id: str, score: Score) -> Path:

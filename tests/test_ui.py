@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 import json
 
-from loom.ui import JsonLine, TurnLine, event_sink
+from loom.ui import JsonLine, TokenStream, TurnLine, event_sink
 
 
 def _clock() -> object:
@@ -74,6 +74,33 @@ def test_json_line_degrades_a_non_serialisable_field_to_text() -> None:
     out = io.StringIO()
     JsonLine(out)({"kind": "artifact_written", "path": Path("/tmp/x.json")})
     assert json.loads(out.getvalue())["path"] == "/tmp/x.json"
+
+
+def test_token_stream_renders_text_as_it_arrives() -> None:
+    """FR-REPL-05 — the formatter writes each delta as it comes, and the output is exactly the
+    concatenation with nothing added: the tokens *are* the stream."""
+    out = io.StringIO()
+    stream = TokenStream(out)
+    for delta in ("Hel", "lo, ", "world"):
+        stream(delta)
+    assert out.getvalue() == "Hello, world"
+    assert stream.text == "Hello, world"
+
+
+def test_token_stream_has_no_escape_sequences() -> None:
+    """It renders on a TTY, but adds no cursor control of its own — the live view owns that."""
+    out = io.StringIO()
+    TokenStream(out)("some streamed text\n")
+    assert "\x1b" not in out.getvalue()
+    assert "\r" not in out.getvalue()
+
+
+def test_token_stream_ignores_empty_deltas() -> None:
+    """A tool-call-only or usage-only chunk yields "" — it must not write a spurious blank."""
+    out = io.StringIO()
+    stream = TokenStream(out)
+    stream("")
+    assert out.getvalue() == "" and stream.text == ""
 
 
 def test_event_sink_picks_the_renderer() -> None:

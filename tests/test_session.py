@@ -115,6 +115,7 @@ def test_the_documented_vocabulary_is_the_implemented_one() -> None:
         "graded",
         "retry",
         "budget_warning",
+        "compacted",
         "phase_finished",
         "interrupted",
         "run_finished",

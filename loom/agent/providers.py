@@ -354,6 +354,8 @@ class LiteLLMProvider:
         sleep: Callable[[float], Any] | None = None,
         jitter: Callable[[float, float], float] | None = None,
         extra: Mapping[str, Any] | None = None,
+        on_token: Callable[[str], None] | None = None,
+        chunk_builder: Callable[..., Any] | None = None,
     ) -> None:
         self.model = model
         self.price_table = dict(price_table or DEFAULT_PRICE_TABLE)
@@ -365,6 +367,10 @@ class LiteLLMProvider:
         self.base_delay = base_delay
         self.temperature = temperature
         self._acompletion = acompletion
+        # FR-REPL-05 — when set, `complete()` streams and forwards each text delta here as it
+        # arrives. Left None everywhere except an interactive TTY run, so nothing else changes.
+        self.on_token = on_token
+        self._chunk_builder = chunk_builder
         self._sleep = sleep or asyncio.sleep
         # Injected so a test can assert the *growth* exactly instead of asserting across two
         # overlapping random bands, which is a flake waiting for a bad CI day.
@@ -386,7 +392,10 @@ class LiteLLMProvider:
         kwargs.update(self.extra)
 
         started = time.perf_counter()
-        raw = await self._call_with_retries(kwargs)
+        if self.on_token is not None:
+            raw = await self._stream(kwargs)
+        else:
+            raw = await self._call_with_retries(kwargs)
         seconds = time.perf_counter() - started
 
         response = to_response(
@@ -424,6 +433,28 @@ class LiteLLMProvider:
                 f"Set {variable} in your environment, or put it in ~/.loom/credentials.json "
                 f'(mode 0600):\n  {{"{variable}": "..."}}'
             )
+
+    async def _stream(self, kwargs: dict[str, Any]) -> Any:
+        """FR-REPL-05 — stream the completion, forwarding each text delta to `on_token`, then
+        reassemble the whole response so cost, tokens and tool calls flow through `to_response`
+        exactly as the non-streaming path does.
+
+        ponytail: no retry wrapper here. Streaming establishes the connection lazily on the first
+        chunk, and re-driving a half-consumed stream is not a retry — it is a second answer. A
+        transient failure mid-stream fails the turn, which the loop already handles. The upgrade,
+        if it ever matters, is to retry only before the first delta.
+        """
+        self._preflight()
+        call = self._acompletion or _litellm_acompletion()
+        build = self._chunk_builder or _litellm_stream_chunk_builder()
+        stream = await call(**{**kwargs, "stream": True})
+        chunks: list[Any] = []
+        async for chunk in stream:
+            chunks.append(chunk)
+            delta = _delta_text(chunk)
+            if delta and self.on_token is not None:
+                self.on_token(delta)
+        return build(chunks, messages=kwargs["messages"])
 
     async def _call_with_retries(self, kwargs: dict[str, Any]) -> Any:
         """FR-AGENT-08 — jittered exponential backoff, bounded, one event per retry."""
@@ -522,3 +553,21 @@ def _litellm_acompletion() -> Callable[..., Any]:
     from litellm import acompletion
 
     return cast("Callable[..., Any]", acompletion)
+
+
+def _delta_text(chunk: Any) -> str:
+    """The text a streamed chunk carries, or "" for a chunk that carries only a tool-call delta,
+    a role marker, or the final usage record."""
+    data = _as_dict(chunk)
+    choices = data.get("choices") or [{}]
+    delta = _as_dict(_as_dict(choices[0]).get("delta") or {})
+    text = delta.get("content")
+    return text if isinstance(text, str) else ""
+
+
+def _litellm_stream_chunk_builder() -> Callable[..., Any]:
+    """litellm's reassembler — turns the list of streamed chunks back into one response object
+    carrying the full text, the tool calls and the usage, which `to_response` then normalises."""
+    import litellm
+
+    return cast("Callable[..., Any]", litellm.stream_chunk_builder)

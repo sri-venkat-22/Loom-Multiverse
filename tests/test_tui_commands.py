@@ -57,6 +57,9 @@ class StubContext:
     session_model: str | None = None
     started: tuple | None = None
     resumed: str | None = None
+    replayed: str | None = None
+    changed_dir: Path | None = None
+    added_dir: Path | None = None
     cleared: bool = False
 
     # ReplContext surface -------------------------------------------------------------
@@ -91,11 +94,26 @@ class StubContext:
 
         set_project_config_value(self.root, "effort", level)
 
+    def persist_config(self, key: str, value: object) -> None:
+        from loom.config import load_config, set_project_config_value
+
+        set_project_config_value(self.root, key, value)  # type: ignore[arg-type]
+        self.config = load_config(cwd=self.root)
+
     def start_run(self, start: str, stop: str, run_first: tuple[str, ...] = ()) -> None:
         self.started = (start, stop, run_first)
 
     def resume(self, run_id: str) -> None:
         self.resumed = run_id
+
+    def replay(self, phase: str) -> None:
+        self.replayed = phase
+
+    def change_dir(self, path: Path) -> None:
+        self.changed_dir = path
+
+    def add_dir(self, path: Path) -> None:
+        self.added_dir = path
 
     def clear_session(self) -> None:
         self.cleared = True
@@ -105,6 +123,15 @@ class StubContext:
 
     def status_report(self) -> str:
         return "model X"
+
+    def doctor_report(self) -> str:
+        return "doctor: all clear"
+
+    def write_bug_bundle(self) -> str:
+        return "wrote a redacted diagnostic bundle → .loom/bug.json"
+
+    def compact_context(self) -> str:
+        return "compacted the context: reclaimed ~500 tokens (12,000 → 10,000 chars)"
 
     @property
     def last(self) -> str:
@@ -297,3 +324,163 @@ def test_while_running_runs_an_immediate_command(tmp_path: Path) -> None:
 def test_registry_entries_are_frozen() -> None:
     # A guard that the declaration stays data — a handler cannot be swapped at runtime.
     assert isinstance(REGISTRY[0], Command)
+
+
+# --------------------------------------------------------------------------- the wired handlers
+
+
+def _write_design(root: Path, run_id: str = "r") -> None:
+    from loom.contracts import Criterion, Design, FileSpec, Rubric
+
+    design = Design(
+        summary="a tiny api",
+        file_manifest=[FileSpec(path="app/main.py", purpose="the app")],
+        rubric=Rubric(
+            threshold=0.85,
+            hard_fail=["tests"],
+            criteria=[
+                Criterion(name="tests", kind="shell", weight=0.6, command="pytest"),
+                Criterion(name="documented", kind="judge", weight=0.4, question="docs?"),
+            ],
+        ),
+    )
+    path = artifact_path(root, run_id, "design")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(design.model_dump_json(indent=2), encoding="utf-8")
+
+
+def _write_score(root: Path, run_id: str = "r") -> None:
+    from loom.rubric import GradedCriterion, Score
+
+    score = Score(
+        total=0.72,
+        criteria=[
+            GradedCriterion(name="tests", kind="shell", weight=0.6, score=1.0, detail="pass"),
+            GradedCriterion(name="documented", kind="judge", weight=0.4, score=0.3, detail="thin"),
+        ],
+    )
+    path = artifact_path(root, run_id, "build")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(score.model_dump_json(indent=2), encoding="utf-8")
+
+
+def test_rubric_shows_criteria_and_the_last_score(tmp_path: Path) -> None:
+    _write_design(tmp_path)
+    _write_score(tmp_path)
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/rubric")
+    out = ctx.last
+    assert "threshold 0.85" in out
+    assert "tests" in out and "hard-fail" in out  # hard_fail criterion flagged
+    assert "→ 0.30" in out  # the judge criterion's last score
+    assert "last score 0.72" in out
+
+
+def test_rubric_without_a_design_says_so(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/rubric")
+    assert "no rubric yet" in ctx.last
+
+
+def test_artifacts_opens_a_named_one_and_skips_the_picker(tmp_path: Path) -> None:
+    # FR-ART-02 / FR-SLASH-06 — a typed phase name renders that artifact's JSON, no picker.
+    _write_design(tmp_path)
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/artifacts design")
+    assert '"summary": "a tiny api"' in ctx.last  # the on-disk JSON, the gate's render
+
+
+def test_artifacts_lists_then_opens_the_selection(tmp_path: Path) -> None:
+    _write_design(tmp_path)
+    ctx = _ctx(tmp_path, list_pick=0)
+    dispatch(ctx, "/artifacts")
+    assert '"file_manifest"' in ctx.last
+
+
+def test_artifacts_with_none_present(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/artifacts")
+    assert "no artifacts yet" in ctx.last
+
+
+def test_config_lists_every_setting_with_its_source(tmp_path: Path) -> None:
+    # FR-CFG-04 — the rendered table names the source for every key.
+    (tmp_path / ".loom").mkdir(exist_ok=True)
+    project_config_path(tmp_path).write_text('effort = "high"\n', encoding="utf-8")
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/config")
+    out = ctx.last
+    assert "source" in out
+    for key in Config.model_fields:
+        if key != "price_table":
+            assert key in out
+    assert "project config" in out  # effort came from the file we wrote
+
+
+def test_config_sets_a_value_to_the_project_file(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/config effort high")
+    assert 'effort = "high"' in project_config_path(tmp_path).read_text()
+    assert "/config → effort = high" in ctx.last
+
+
+def test_config_refuses_an_unknown_key_or_bad_value(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/config nope 1")
+    assert "no such setting" in ctx.last
+    dispatch(ctx, "/config budget_usd notanumber")
+    assert "invalid budget_usd" in ctx.last
+    assert not project_config_path(tmp_path).is_file()  # nothing was written
+
+
+def test_budget_shows_and_sets_the_ceiling(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/budget")
+    assert "budget ceiling $" in ctx.last
+    dispatch(ctx, "/budget 8")
+    assert "budget_usd = 8" in project_config_path(tmp_path).read_text()
+    assert "$8.00 per run" in ctx.last
+
+
+def test_replay_runs_a_shape_a_phase_with_cached_upstream(tmp_path: Path) -> None:
+    _touch_artifact(tmp_path, "validate")
+    _touch_artifact(tmp_path, "plan")
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/replay design")
+    assert ctx.replayed == "design"
+
+
+def test_replay_rejects_build_and_missing_upstream(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/replay build")
+    assert "one of validate, plan, design" in ctx.last
+    assert ctx.replayed is None
+    dispatch(ctx, "/replay design")  # nothing upstream produced
+    assert "can't replay design" in ctx.last
+
+
+def test_cd_and_add_dir_validate_the_directory(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    (tmp_path / "sub").mkdir()
+    dispatch(ctx, "/cd sub")
+    assert ctx.changed_dir == (tmp_path / "sub").resolve()
+    dispatch(ctx, "/cd nowhere")
+    assert "no such directory" in ctx.last
+    dispatch(ctx, "/add-dir sub")
+    assert ctx.added_dir == (tmp_path / "sub").resolve()
+
+
+def test_doctor_and_bug_route_to_the_context(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/doctor")
+    assert ctx.last == "doctor: all clear"
+    dispatch(ctx, "/bug")
+    assert "redacted diagnostic bundle" in ctx.last
+
+
+def test_compact_routes_to_the_context_and_reports(tmp_path: Path) -> None:
+    """FR-SESS-06 — /compact is wired to the context's compaction (no longer a stub) and prints
+    its reclaimed-tokens report."""
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "/compact")
+    assert "reclaimed" in ctx.last and "tokens" in ctx.last
